@@ -43,9 +43,11 @@ export interface WorkflowMessageMetadata {
     | 'workflow_status'
     | 'workflow_dispatch_status'
     | 'isolation_context'
-    | 'workflow_result';
+    | 'workflow_result'
+    | 'workflow_approval';
   segment?: 'new' | 'auto';
-  workflowDispatch?: { workerConversationId: string; workflowName: string };
+  workflowDispatch?: { workerConversationId: string; workflowName: string; runId?: string };
+  workflowRun?: { workflowName: string; runId: string };
   workflowResult?: { workflowName: string; runId: string };
 }
 

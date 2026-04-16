@@ -4179,6 +4179,71 @@ describe('executeDagWorkflow -- approval node', () => {
     });
   });
 
+  it('approval message substitutes prior node output refs before pausing', async () => {
+    mockSendQueryDag.mockImplementation(function* () {
+      yield { type: 'assistant', content: JSON.stringify({ display: '1. 方案 A\n2. 方案 B' }) };
+      yield { type: 'result', sessionId: 'pick-session' };
+    });
+
+    const store = createMockStore();
+    const mockDeps = createMockDeps(store);
+    const platform = createMockPlatform();
+    const workflowRun = makeWorkflowRun();
+
+    await executeDagWorkflow(
+      mockDeps,
+      platform,
+      'conv-approval',
+      testDir,
+      {
+        name: 'approval-message-substitution',
+        nodes: [
+          {
+            id: 'pick',
+            prompt: 'List stories as JSON',
+          },
+          {
+            id: 'review',
+            depends_on: ['pick'],
+            approval: {
+              message: '请选择一条需求：\n\n$pick.output.display',
+              capture_response: true,
+            },
+          },
+        ],
+      },
+      workflowRun,
+      'claude',
+      undefined,
+      join(testDir, 'artifacts'),
+      join(testDir, 'logs'),
+      'main',
+      'docs/',
+      minimalConfig
+    );
+
+    const pauseCalls = (
+      store.pauseWorkflowRun as Mock<(id: string, ctx: Record<string, unknown>) => Promise<void>>
+    ).mock.calls;
+    expect(pauseCalls.length).toBe(1);
+    expect(pauseCalls[0][1]).toMatchObject({
+      type: 'approval',
+      nodeId: 'review',
+      message: '请选择一条需求：\n\n1. 方案 A\n2. 方案 B',
+      captureResponse: true,
+    });
+
+    const sendCalls = (platform.sendMessage as Mock).mock.calls;
+    expect(sendCalls.some((call: unknown[]) => String(call[1]).includes('1. 方案 A'))).toBe(true);
+    const approvalSendCall = sendCalls.find((call: unknown[]) =>
+      String(call[1]).includes('⏸ **Approval required**:')
+    );
+    expect(approvalSendCall?.[2]).toMatchObject({
+      category: 'workflow_approval',
+    });
+    expect(String(approvalSendCall?.[1])).toContain('直接在当前会话回复内容继续');
+  });
+
   it('approval node without capture_response stores empty node output', async () => {
     const store = createMockStore();
     const mockDeps = createMockDeps(store);

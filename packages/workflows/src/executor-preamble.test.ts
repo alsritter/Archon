@@ -96,10 +96,12 @@ function makeStore(overrides: Partial<IWorkflowStore> = {}): IWorkflowStore {
   };
 }
 
-function makePlatform(): IWorkflowPlatform & { sendMessage: ReturnType<typeof mock> } {
+function makePlatform(
+  platformType = 'test'
+): IWorkflowPlatform & { sendMessage: ReturnType<typeof mock> } {
   return {
     sendMessage: mock(async () => {}),
-    getPlatformType: mock(() => 'test' as const),
+    getPlatformType: mock(() => platformType),
   } as unknown as IWorkflowPlatform & { sendMessage: ReturnType<typeof mock> };
 }
 
@@ -343,6 +345,8 @@ describe('executeWorkflow preamble', () => {
       const resumeMsg = findMessage(platform, 'Resuming');
       expect(resumeMsg).toBeDefined();
       expect((resumeMsg as unknown[])[1]).toContain('1 already-completed node(s)');
+      const startupMsg = findMessage(platform, 'Starting workflow');
+      expect(startupMsg).toBeUndefined();
 
       // Workflow run ID should be from the resumed run
       expect(result.workflowRunId).toBe('prior-run');
@@ -382,9 +386,84 @@ describe('executeWorkflow preamble', () => {
       // Resume notification was sent to user
       const resumeMsg = findMessage(platform, 'Resuming');
       expect(resumeMsg).toBeDefined();
+      const startupMsg = findMessage(platform, 'Starting workflow');
+      expect(startupMsg).toBeUndefined();
 
       // Workflow run ID should be from the resumed run
       expect(result.workflowRunId).toBe('prior-int');
+    });
+
+    it('does not send a resume preamble to Feishu for standard DAG resumes', async () => {
+      const failedRun = makeRun({ id: 'prior-feishu', status: 'failed' });
+      const priorNodes = new Map([['node-a', 'output from node-a']]);
+      const resumedRun = makeRun({ id: 'prior-feishu', status: 'running' });
+
+      const store = makeStore({
+        findResumableRun: mock(async () => failedRun),
+        getCompletedDagNodeOutputs: mock(async () => priorNodes),
+        resumeWorkflowRun: mock(async () => resumedRun),
+      });
+      const deps = makeDeps(store);
+      const platform = makePlatform('feishu');
+
+      const result = await executeWorkflow(
+        deps,
+        platform,
+        'conv-123',
+        '/tmp',
+        makeWorkflow(),
+        'User message',
+        'db-conv-id'
+      );
+
+      const resumeMsg = findMessage(platform, 'Resuming');
+      expect(resumeMsg).toBeUndefined();
+      const startupMsg = findMessage(platform, 'Starting workflow');
+      expect(startupMsg).toBeUndefined();
+      expect(result.workflowRunId).toBe('prior-feishu');
+    });
+
+    it('does not send a resume preamble when continuing an interactive loop', async () => {
+      const pausedLoopRun = makeRun({
+        id: 'prior-loop',
+        status: 'paused',
+        metadata: {
+          approval: {
+            type: 'interactive_loop',
+            nodeId: 'brainstorm_design',
+            iteration: 2,
+          },
+        },
+      });
+      const resumedRun = makeRun({
+        id: 'prior-loop',
+        status: 'running',
+        metadata: pausedLoopRun.metadata,
+      });
+
+      const store = makeStore({
+        findResumableRun: mock(async () => pausedLoopRun),
+        getCompletedDagNodeOutputs: mock(async () => new Map([['pick_story', 'done']])),
+        resumeWorkflowRun: mock(async () => resumedRun),
+      });
+      const deps = makeDeps(store);
+      const platform = makePlatform();
+
+      const result = await executeWorkflow(
+        deps,
+        platform,
+        'conv-123',
+        '/tmp',
+        makeWorkflow(),
+        '确认方案',
+        'db-conv-id'
+      );
+
+      const resumeMsg = findMessage(platform, 'Resuming');
+      expect(resumeMsg).toBeUndefined();
+      const startupMsg = findMessage(platform, 'Starting workflow');
+      expect(startupMsg).toBeUndefined();
+      expect(result.workflowRunId).toBe('prior-loop');
     });
 
     it('returns error when DAG resumeWorkflowRun throws', async () => {

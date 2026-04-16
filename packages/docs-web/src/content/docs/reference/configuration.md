@@ -230,6 +230,17 @@ When `CLAUDE_USE_GLOBAL_AUTH` is unset, Archon auto-detects: it uses explicit to
 | `TELEGRAM_ALLOWED_USER_IDS` | Comma-separated Telegram user IDs for whitelist | Open access |
 | `TELEGRAM_STREAMING_MODE` | Streaming mode (`stream` or `batch`) | `stream` |
 
+### Platform Adapters -- Feishu
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `FEISHU_APP_ID` | Feishu/Lark app ID for the bot app | -- |
+| `FEISHU_APP_SECRET` | Feishu/Lark app secret | -- |
+| `FEISHU_VERIFICATION_TOKEN` | Optional event subscription verification token | -- |
+| `FEISHU_ALLOWED_OPEN_IDS` | Comma-separated sender open IDs for whitelist | Open access |
+| `FEISHU_BASE_URL` | Override API base URL | `https://open.feishu.cn` |
+| `FEISHU_STREAMING_MODE` | Streaming mode (`stream` or `batch`) | `batch` |
+
 ### Platform Adapters -- Discord
 
 | Variable | Description | Default |

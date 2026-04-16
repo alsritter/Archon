@@ -2060,19 +2060,35 @@ async function executeApprovalNode(
     // Fall through to re-pause at the approval gate
   }
 
-  // Standard approval gate — send message and pause
-  const approvalMsg =
-    `⏸ **Approval required**: ${node.approval.message}\n\n` +
-    `Run ID: \`${workflowRun.id}\`\n` +
-    `Approve: \`/workflow approve ${workflowRun.id}\` | Reject: \`/workflow reject ${workflowRun.id}\``;
-  await safeSendMessage(platform, conversationId, approvalMsg, msgContext);
+  // Standard approval gate — substitute workflow + node output refs before sending/persisting
+  const { prompt: substitutedApprovalMessage } = substituteWorkflowVariables(
+    node.approval.message,
+    workflowRun.id,
+    workflowRun.user_message ?? '',
+    artifactsDir,
+    baseBranch,
+    docsDir,
+    issueContext
+  );
+  const resolvedApprovalMessage = substituteNodeOutputRefs(substitutedApprovalMessage, nodeOutputs);
+
+  const approvalMsg = node.approval.capture_response
+    ? `⏸ **Approval required**: ${resolvedApprovalMessage}\n\n` +
+      `Run ID: \`${workflowRun.id}\`\n` +
+      `直接在当前会话回复内容继续，或输入 \`/workflow reject ${workflowRun.id}\` 取消。`
+    : `⏸ **Approval required**: ${resolvedApprovalMessage}\n\n` +
+      `Run ID: \`${workflowRun.id}\`\n` +
+      `Approve: \`/workflow approve ${workflowRun.id}\` | Reject: \`/workflow reject ${workflowRun.id}\``;
+  await safeSendMessage(platform, conversationId, approvalMsg, msgContext, {
+    category: 'workflow_approval',
+  });
 
   deps.store
     .createWorkflowEvent({
       workflow_run_id: workflowRun.id,
       event_type: 'approval_requested',
       step_name: node.id,
-      data: { message: node.approval.message },
+      data: { message: resolvedApprovalMessage },
     })
     .catch((err: Error) => {
       getLog().error(
@@ -2082,7 +2098,7 @@ async function executeApprovalNode(
     });
 
   await deps.store.pauseWorkflowRun(workflowRun.id, {
-    message: node.approval.message,
+    message: resolvedApprovalMessage,
     nodeId: node.id,
     type: 'approval',
     captureResponse: node.approval.capture_response,
@@ -2094,7 +2110,7 @@ async function executeApprovalNode(
     type: 'approval_pending',
     runId: workflowRun.id,
     nodeId: node.id,
-    message: node.approval.message,
+    message: resolvedApprovalMessage,
   });
 
   // Return completed — the between-layer status check will see 'paused' and break.

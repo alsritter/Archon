@@ -303,41 +303,7 @@ export async function dispatchBackgroundWorkflow(
     workerCwd = ctx.cwd;
   }
 
-  // 4. Notify parent chat that workflow is dispatching
-  await ctx.platform.sendMessage(
-    ctx.conversationId,
-    `🚀 Dispatching workflow: **${workflow.name}** (background)`,
-    {
-      category: 'workflow_dispatch_status',
-      segment: 'new',
-      workflowDispatch: { workerConversationId: workerPlatformId, workflowName: workflow.name },
-    }
-  );
-
-  // Narrow to web adapter for web-specific operations
-  const webAdapter = isWebAdapter(ctx.platform) ? ctx.platform : null;
-
-  // Send structured dispatch event for Web UI
-  if (webAdapter) {
-    await webAdapter.sendStructuredEvent(ctx.conversationId, {
-      type: 'workflow_dispatch',
-      workerConversationId: workerPlatformId,
-      workflowName: workflow.name,
-    });
-  }
-
-  // 5. Set up DB ID mapping for worker (needed for message persistence)
-  if (webAdapter) {
-    webAdapter.setConversationDbId(workerPlatformId, workerConv.id);
-  }
-
-  // 6. Set up event bridge (worker events → parent SSE stream)
-  let unsubscribeBridge: (() => void) | undefined;
-  if (webAdapter) {
-    unsubscribeBridge = webAdapter.setupEventBridge(workerPlatformId, ctx.conversationId);
-  }
-
-  // 7. Pre-create workflow run row so the UI can fetch it immediately.
+  // 4. Pre-create workflow run row so the UI can fetch it immediately.
   // Without this, navigating to the execution page before executeWorkflow's
   // async setup completes would 404 (row doesn't exist yet for 1-5 seconds).
   const workflowDeps = createWorkflowDeps();
@@ -356,6 +322,44 @@ export async function dispatchBackgroundWorkflow(
     const err = error as Error;
     getLog().error({ err, workflowName: workflow.name }, 'pre_create_workflow_run_failed');
     // Non-fatal: executeWorkflow will create its own row as fallback
+  }
+
+  // 5. Notify parent chat that workflow is dispatching
+  await ctx.platform.sendMessage(
+    ctx.conversationId,
+    `🚀 Dispatching workflow: **${workflow.name}** (background)`,
+    {
+      category: 'workflow_dispatch_status',
+      segment: 'new',
+      workflowDispatch: {
+        workerConversationId: workerPlatformId,
+        workflowName: workflow.name,
+        runId: preCreatedRun?.id,
+      },
+    }
+  );
+
+  // Narrow to web adapter for web-specific operations
+  const webAdapter = isWebAdapter(ctx.platform) ? ctx.platform : null;
+
+  // Send structured dispatch event for Web UI
+  if (webAdapter) {
+    await webAdapter.sendStructuredEvent(ctx.conversationId, {
+      type: 'workflow_dispatch',
+      workerConversationId: workerPlatformId,
+      workflowName: workflow.name,
+    });
+  }
+
+  // 6. Set up DB ID mapping for worker (needed for message persistence)
+  if (webAdapter) {
+    webAdapter.setConversationDbId(workerPlatformId, workerConv.id);
+  }
+
+  // 7. Set up event bridge (worker events → parent SSE stream)
+  let unsubscribeBridge: (() => void) | undefined;
+  if (webAdapter) {
+    unsubscribeBridge = webAdapter.setupEventBridge(workerPlatformId, ctx.conversationId);
   }
 
   // 8. Fire-and-forget: run workflow in background

@@ -1187,12 +1187,7 @@ describe('natural-language approval routing', () => {
 
     // Approval events should be written
     expect(mockCreateWorkflowEvent).toHaveBeenCalledTimes(2);
-    // Resuming message sent
-    expect(platform.sendMessage).toHaveBeenCalledWith(
-      'conv-1',
-      expect.stringContaining('Resuming')
-    );
-    // Workflow should be executed
+    // Workflow should be executed without an extra orchestrator-level resume message
     expect(mockExecuteWorkflow).toHaveBeenCalled();
   });
 

@@ -59,7 +59,13 @@ registerBuiltinProviders();
 
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { validationErrorHook } from './routes/openapi-defaults';
-import { TelegramAdapter, GitHubAdapter, DiscordAdapter, SlackAdapter } from '@archon/adapters';
+import {
+  TelegramAdapter,
+  GitHubAdapter,
+  DiscordAdapter,
+  SlackAdapter,
+  FeishuAdapter,
+} from '@archon/adapters';
 import { GiteaAdapter } from '@archon/adapters/community/forge/gitea';
 import { GitLabAdapter } from '@archon/adapters/community/forge/gitlab';
 import { WebAdapter } from './adapters/web';
@@ -77,6 +83,7 @@ import {
   loadConfig,
   logConfig,
   getPort,
+  workflowOperations,
 } from '@archon/core';
 import type { IPlatformAdapter } from '@archon/core';
 import { createLogger, logArchonPaths, validateAppDefaultsPaths } from '@archon/paths';
@@ -257,6 +264,7 @@ export async function startServer(opts: ServerOptions = {}): Promise<void> {
   let gitlab: GitLabAdapter | null = null;
   let discord: DiscordAdapter | null = null;
   let slack: SlackAdapter | null = null;
+  let feishu: FeishuAdapter | null = null;
 
   if (!opts.skipPlatformAdapters) {
     // Check that at least one platform is configured
@@ -267,8 +275,9 @@ export async function startServer(opts: ServerOptions = {}): Promise<void> {
       process.env.GITEA_URL && process.env.GITEA_TOKEN && process.env.GITEA_WEBHOOK_SECRET
     );
     const hasGitLab = Boolean(process.env.GITLAB_TOKEN && process.env.GITLAB_WEBHOOK_SECRET);
+    const hasFeishu = Boolean(process.env.FEISHU_APP_ID && process.env.FEISHU_APP_SECRET);
 
-    if (!hasTelegram && !hasDiscord && !hasGitHub && !hasGitea && !hasGitLab) {
+    if (!hasTelegram && !hasDiscord && !hasGitHub && !hasGitea && !hasGitLab && !hasFeishu) {
       getLog().warn('no_platform_adapters_configured');
     }
 
@@ -434,6 +443,122 @@ export async function startServer(opts: ServerOptions = {}): Promise<void> {
       await slack.start();
     } else {
       getLog().info('slack_adapter_skipped');
+    }
+
+    // Initialize Feishu adapter (conditional)
+    if (process.env.FEISHU_APP_ID && process.env.FEISHU_APP_SECRET) {
+      const feishuStreamingMode = (process.env.FEISHU_STREAMING_MODE ?? 'batch') as
+        | 'stream'
+        | 'batch';
+      feishu = new FeishuAdapter(
+        process.env.FEISHU_APP_ID,
+        process.env.FEISHU_APP_SECRET,
+        feishuStreamingMode,
+        {
+          verificationToken: process.env.FEISHU_VERIFICATION_TOKEN || undefined,
+          encryptKey: process.env.FEISHU_ENCRYPT_KEY || undefined,
+          domain: process.env.FEISHU_DOMAIN === 'lark' ? 'lark' : 'feishu',
+          baseUrl: process.env.FEISHU_BASE_URL || undefined,
+          allowedOpenIds: process.env.FEISHU_ALLOWED_OPEN_IDS || undefined,
+        }
+      );
+      const feishuAdapter = feishu;
+
+      feishuAdapter.onMessage(async context => {
+        const { messageId, chatId, chatType } = context;
+        let conversationId = context.conversationId;
+        let message = context.message;
+
+        if (message.startsWith('/topic run ')) {
+          conversationId = await feishuAdapter.ensureThread(conversationId, context);
+          message = `/workflow run ${message.slice('/topic run '.length).trim()}`;
+        }
+
+        void feishuAdapter.setMessageProgressState(messageId, 'received');
+        lockManager
+          .acquireLock(conversationId, async () => {
+            await feishuAdapter.setMessageProgressState(messageId, 'running');
+            try {
+              await handleMessage(feishuAdapter, conversationId, message, {
+                parentConversationId:
+                  chatType === 'group' && conversationId !== `chat:${chatId}`
+                    ? `chat:${chatId}`
+                    : undefined,
+                isolationHints: { workflowType: 'thread', workflowId: conversationId },
+              });
+              await feishuAdapter.setMessageProgressState(messageId, 'done');
+            } catch (error) {
+              await feishuAdapter.setMessageProgressState(messageId, 'failed');
+              throw error;
+            }
+          })
+          .catch(createMessageErrorHandler('Feishu', feishuAdapter, conversationId));
+      });
+
+      feishuAdapter.onCardAction(async ({ action, runId }) => {
+        if (!runId) {
+          return {
+            title: 'Workflow action failed',
+            template: 'red',
+            body: '缺少 workflow run ID，无法处理这次卡片操作。',
+          };
+        }
+
+        try {
+          if (action === 'workflow_approve') {
+            const result = await workflowOperations.approveWorkflow(
+              runId,
+              'Approved from Feishu card'
+            );
+            const nextStep =
+              result.type === 'interactive_loop'
+                ? '已记录本轮输入。请在当前会话继续发送下一条消息，workflow 会继续推进。'
+                : '已批准当前节点。请在当前会话继续发送下一条消息，workflow 会恢复执行。';
+            return {
+              title: 'Workflow approved',
+              template: 'green',
+              body: `**\`${result.workflowName}\`** 已通过审批。\n\n${nextStep}`,
+              note: `Run ID: ${runId}`,
+            };
+          }
+
+          if (action === 'workflow_reject') {
+            const result = await workflowOperations.rejectWorkflow(
+              runId,
+              'Rejected from Feishu card'
+            );
+            const body = result.cancelled
+              ? `**\`${result.workflowName}\`** 已驳回并结束。`
+              : `**\`${result.workflowName}\`** 已驳回。\n\n下次恢复时会走 on-reject 分支。`;
+            return {
+              title: 'Workflow rejected',
+              template: 'red',
+              body,
+              note: `Run ID: ${runId}`,
+            };
+          }
+
+          return {
+            title: 'Unsupported action',
+            template: 'grey',
+            body: `暂不支持的卡片操作：\`${action}\``,
+            note: `Run ID: ${runId}`,
+          };
+        } catch (error) {
+          const err = error as Error;
+          getLog().error({ err, action, runId }, 'feishu_card_action_failed');
+          return {
+            title: 'Workflow action failed',
+            template: 'red',
+            body: `处理卡片操作失败：${err.message}`,
+            note: `Run ID: ${runId}`,
+          };
+        }
+      });
+
+      await feishu.start();
+    } else {
+      getLog().info('feishu_adapter_skipped');
     }
   } else {
     getLog().info('platform_adapters_skipped');
@@ -633,6 +758,7 @@ export async function startServer(opts: ServerOptions = {}): Promise<void> {
           telegram?.stop();
           discord?.stop();
           slack?.stop();
+          feishu?.stop();
           gitea?.stop();
           gitlab?.stop();
           await webAdapter.stop();
@@ -669,6 +795,7 @@ export async function startServer(opts: ServerOptions = {}): Promise<void> {
   if (telegram) activePlatforms.push('Telegram');
   if (discord) activePlatforms.push('Discord');
   if (slack) activePlatforms.push('Slack');
+  if (feishu) activePlatforms.push('Feishu');
   if (github) activePlatforms.push('GitHub');
   if (gitea) activePlatforms.push('Gitea');
   if (gitlab) activePlatforms.push('GitLab');

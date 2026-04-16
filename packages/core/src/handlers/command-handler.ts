@@ -887,6 +887,89 @@ async function handleWorkflowCommand(
   }
 }
 
+async function handleReposCommand(): Promise<CommandResult> {
+  const codebases = await codebaseDb.listCodebases();
+  if (codebases.length === 0) {
+    return { success: true, message: 'No registered projects.' };
+  }
+
+  let msg = `Registered Projects (${String(codebases.length)})\n\n`;
+  codebases.forEach((codebase, index) => {
+    msg += `${String(index + 1)}. ${codebase.name}\n`;
+    msg += `   Path: ${codebase.default_cwd}\n`;
+  });
+
+  return { success: true, message: msg.trim() };
+}
+
+async function handleRepoCommand(
+  conversation: Conversation,
+  args: string[]
+): Promise<CommandResult> {
+  const selector = args[0];
+  if (!selector) {
+    return {
+      success: false,
+      message: 'Usage: /repo <#|name>',
+    };
+  }
+
+  const codebases = await codebaseDb.listCodebases();
+  if (codebases.length === 0) {
+    return {
+      success: false,
+      message: 'No registered projects. Use /register-project first.',
+    };
+  }
+
+  let target = codebases.find(cb => cb.name === selector) ?? null;
+  if (!target && /^\d+$/.test(selector)) {
+    target = codebases[Number.parseInt(selector, 10) - 1] ?? null;
+  }
+
+  if (!target) {
+    return {
+      success: false,
+      message: `Project "${selector}" not found.\n\nUse /repos to see available projects.`,
+    };
+  }
+
+  await db.updateConversation(conversation.id, {
+    codebase_id: target.id,
+    cwd: target.default_cwd,
+  });
+
+  if (
+    conversation.platform_type === 'feishu' &&
+    conversation.platform_conversation_id.startsWith('chat:') &&
+    (conversation.platform_conversation_id.includes(':reply:') ||
+      conversation.platform_conversation_id.includes(':thread:'))
+  ) {
+    const chatId = conversation.platform_conversation_id.slice(
+      5,
+      conversation.platform_conversation_id.indexOf(':', 5)
+    );
+    const parentPlatformConversationId = `chat:${chatId}`;
+    const parentConversation = await db.getOrCreateConversation(
+      conversation.platform_type,
+      parentPlatformConversationId
+    );
+    await db.updateConversation(parentConversation.id, {
+      codebase_id: target.id,
+      cwd: target.default_cwd,
+    });
+  }
+
+  return {
+    success: true,
+    modified: true,
+    message:
+      `Active project set to \`${target.name}\`.\n` +
+      `Path: \`${target.default_cwd}\`\n\n` +
+      'Use `/workflow list` to see workflows for this project.',
+  };
+}
+
 export async function handleCommand(
   conversation: Conversation,
   message: string
@@ -922,6 +1005,8 @@ Talk naturally — the orchestrator routes your requests to the right workflow a
 - \`/register-project <name> <path>\` — Register a local project
 - \`/update-project <name> <new-path>\` — Update a project's path
 - \`/remove-project <name>\` — Remove a registered project
+- \`/repos\` — List registered projects
+- \`/repo <#|name>\` — Switch this conversation to a project
 
 **Session**
 - \`/status\` — Show current session and project info
@@ -1061,6 +1146,12 @@ Talk naturally — the orchestrator routes your requests to the right workflow a
 
     case 'worktree':
       return handleWorktreeCommand(conversation, args);
+
+    case 'repos':
+      return handleReposCommand();
+
+    case 'repo':
+      return handleRepoCommand(conversation, args);
 
     case 'workflow':
       return handleWorkflowCommand(conversation, args);

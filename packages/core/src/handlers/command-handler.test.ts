@@ -23,6 +23,7 @@ const mockUpdateConversation = mock(() => Promise.resolve());
 const mockGetCodebase = mock(() => Promise.resolve(null));
 const mockFindCodebaseByDefaultCwd = mock(() => Promise.resolve(null));
 const mockCreateCodebase = mock(() => Promise.resolve(null));
+const mockListCodebases = mock(() => Promise.resolve([]));
 const mockGetCodebaseCommands = mock(() => Promise.resolve({}));
 const mockUpdateCodebaseCommands = mock(() => Promise.resolve());
 const mockDeleteCodebase = mock(() => Promise.resolve());
@@ -70,6 +71,7 @@ mock.module('../db/codebases', () => ({
   getCodebase: mockGetCodebase,
   findCodebaseByDefaultCwd: mockFindCodebaseByDefaultCwd,
   createCodebase: mockCreateCodebase,
+  listCodebases: mockListCodebases,
   getCodebaseCommands: mockGetCodebaseCommands,
   updateCodebaseCommands: mockUpdateCodebaseCommands,
   deleteCodebase: mockDeleteCodebase,
@@ -215,6 +217,7 @@ function clearAllMocks(): void {
   mockGetCodebase.mockClear();
   mockFindCodebaseByDefaultCwd.mockClear();
   mockCreateCodebase.mockClear();
+  mockListCodebases.mockClear();
   mockGetCodebaseCommands.mockClear();
   mockUpdateCodebaseCommands.mockClear();
   mockDeleteCodebase.mockClear();
@@ -650,6 +653,101 @@ describe('CommandHandler', () => {
         const result = await handleCommand(baseConversation, '/reset');
         expect(result.success).toBe(true);
         expect(result.message).toContain('No active session');
+      });
+    });
+
+    describe('/repos', () => {
+      test('should list registered projects deterministically', async () => {
+        mockListCodebases.mockResolvedValue([
+          {
+            id: 'cb-1',
+            name: 'alsritter/Archon',
+            repository_url: 'https://github.com/alsritter/Archon',
+            default_cwd: '/repo/archon',
+            ai_assistant_type: 'claude',
+            commands: {},
+            created_at: new Date(),
+            updated_at: new Date(),
+          },
+          {
+            id: 'cb-2',
+            name: 'alsritter/jinxiaoai-root-project-dir',
+            repository_url: 'git@github.com:alsritter/jinxiaoai-root-project-dir.git',
+            default_cwd: '/repo/project-root',
+            ai_assistant_type: 'codex',
+            commands: {},
+            created_at: new Date(),
+            updated_at: new Date(),
+          },
+        ]);
+
+        const result = await handleCommand(baseConversation, '/repos');
+
+        expect(result.success).toBe(true);
+        expect(result.message).toContain('1. alsritter/Archon');
+        expect(result.message).toContain('2. alsritter/jinxiaoai-root-project-dir');
+      });
+    });
+
+    describe('/repo', () => {
+      test('should switch project by exact name', async () => {
+        mockListCodebases.mockResolvedValue([
+          {
+            id: 'cb-2',
+            name: 'alsritter/jinxiaoai-root-project-dir',
+            repository_url: 'git@github.com:alsritter/jinxiaoai-root-project-dir.git',
+            default_cwd: '/repo/project-root',
+            ai_assistant_type: 'codex',
+            commands: {},
+            created_at: new Date(),
+            updated_at: new Date(),
+          },
+        ]);
+
+        const result = await handleCommand(
+          baseConversation,
+          '/repo alsritter/jinxiaoai-root-project-dir'
+        );
+
+        expect(result.success).toBe(true);
+        expect(mockUpdateConversation).toHaveBeenCalledWith('conv-123', {
+          codebase_id: 'cb-2',
+          cwd: '/repo/project-root',
+        });
+        expect(result.message).toContain('Active project set to');
+      });
+
+      test('should switch project by numeric index', async () => {
+        mockListCodebases.mockResolvedValue([
+          {
+            id: 'cb-1',
+            name: 'alsritter/Archon',
+            repository_url: 'https://github.com/alsritter/Archon',
+            default_cwd: '/repo/archon',
+            ai_assistant_type: 'claude',
+            commands: {},
+            created_at: new Date(),
+            updated_at: new Date(),
+          },
+          {
+            id: 'cb-2',
+            name: 'alsritter/jinxiaoai-root-project-dir',
+            repository_url: 'git@github.com:alsritter/jinxiaoai-root-project-dir.git',
+            default_cwd: '/repo/project-root',
+            ai_assistant_type: 'codex',
+            commands: {},
+            created_at: new Date(),
+            updated_at: new Date(),
+          },
+        ]);
+
+        const result = await handleCommand(baseConversation, '/repo 2');
+
+        expect(result.success).toBe(true);
+        expect(mockUpdateConversation).toHaveBeenCalledWith('conv-123', {
+          codebase_id: 'cb-2',
+          cwd: '/repo/project-root',
+        });
       });
     });
 

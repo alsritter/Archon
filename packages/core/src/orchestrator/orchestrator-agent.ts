@@ -616,7 +616,6 @@ export async function handleMessage(
             );
             return;
           }
-          await platform.sendMessage(conversationId, `▶️ Resuming **${workflow.name}**...`);
           await dispatchOrchestratorWorkflow(
             platform,
             conversationId,
@@ -653,6 +652,8 @@ export async function handleMessage(
         'status',
         'reset',
         'workflow',
+        'repos',
+        'repo',
         'register-project',
         'update-project',
         'remove-project',
@@ -685,7 +686,6 @@ export async function handleMessage(
 
         getLog().debug({ command, conversationId }, 'deterministic_command');
         const result = await commandHandler.handleCommand(conversation, message);
-        await platform.sendMessage(conversationId, result.message);
 
         if (result.workflow) {
           await handleWorkflowRunCommand(
@@ -696,6 +696,8 @@ export async function handleMessage(
             result.workflow.args ?? message,
             isolationHints
           );
+        } else {
+          await platform.sendMessage(conversationId, result.message);
         }
         return;
       }

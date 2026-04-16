@@ -317,6 +317,7 @@ export async function executeWorkflow(
   // Resume detection and concurrent-run checks
   let dagPriorCompletedNodes: Map<string, string> | undefined;
   let workflowRun: WorkflowRun | undefined = preCreatedRun;
+  let resumedExistingRun = false;
 
   // Resume detection: check for prior failed run on same workflow + worktree
   {
@@ -382,6 +383,7 @@ export async function executeWorkflow(
 
           workflowRun = await deps.store.resumeWorkflowRun(resumableRun.id);
           dagPriorCompletedNodes = priorNodes;
+          resumedExistingRun = true;
 
           if (orphanPreCreated) {
             await deps.store
@@ -407,11 +409,13 @@ export async function executeWorkflow(
             },
             'workflow.dag_resuming'
           );
-          const resumeMsg =
-            priorNodes.size > 0
-              ? `▶️ **Resuming** workflow \`${workflow.name}\` — skipping ${String(priorNodes.size)} already-completed node(s).\n\nNote: AI session context from prior nodes is not restored. Nodes that depend on prior context may need to re-read artifacts.`
-              : `▶️ **Resuming** workflow \`${workflow.name}\` — continuing interactive loop.`;
-          await safeSendMessage(platform, conversationId, resumeMsg);
+          if (!hasInteractiveLoopState && platform.getPlatformType() !== 'feishu') {
+            const resumeMsg =
+              priorNodes.size > 0
+                ? `▶️ **Resuming** workflow \`${workflow.name}\` — skipping ${String(priorNodes.size)} already-completed node(s).\n\nNote: AI session context from prior nodes is not restored. Nodes that depend on prior context may need to re-read artifacts.`
+                : `▶️ **Resuming** workflow \`${workflow.name}\` — continuing interactive loop.`;
+            await safeSendMessage(platform, conversationId, resumeMsg);
+          }
         } catch (error) {
           const err = error as Error;
           getLog().error(
@@ -692,35 +696,44 @@ export async function executeWorkflow(
       }
     }
 
-    // Add workflow start message (step details omitted from text notification)
-    // Strip routing metadata from description (Use when:, Handles:, NOT for:, Capability:, Triggers:)
-    const cleanDescription = (workflow.description ?? '')
-      .split('\n')
-      .filter(
-        line =>
-          !/^\s*(Use when|Handles|NOT for|Capability|Triggers)[:\s]/i.test(line) && line.trim()
-      )
-      .join('\n')
-      .trim();
-    const descriptionText = cleanDescription || workflow.name;
-    startupMessage += `🚀 **Starting workflow**: \`${workflow.name}\`\n\n> ${descriptionText}`;
+    if (!resumedExistingRun) {
+      // Add workflow start message (step details omitted from text notification)
+      // Strip routing metadata from description (Use when:, Handles:, NOT for:, Capability:, Triggers:)
+      const cleanDescription = (workflow.description ?? '')
+        .split('\n')
+        .filter(
+          line =>
+            !/^\s*(Use when|Handles|NOT for|Capability|Triggers)[:\s]/i.test(line) && line.trim()
+        )
+        .join('\n')
+        .trim();
+      const descriptionText = cleanDescription || workflow.name;
+      startupMessage += `🚀 **Starting workflow**: \`${workflow.name}\`\n\n> ${descriptionText}`;
 
-    // Send consolidated message - use critical send with limited retries (1 retry max)
-    // to avoid blocking workflow execution while still catching transient failures
-    const startupSent = await sendCriticalMessage(
-      platform,
-      conversationId,
-      startupMessage,
-      workflowContext,
-      2, // maxRetries=2 means 2 total attempts (1 initial + 1 retry), 1s max delay
-      { category: 'workflow_status', segment: 'new' }
-    );
-    if (!startupSent) {
-      getLog().error(
-        { workflowId: workflowRun.id, conversationId },
-        'startup_message_delivery_failed'
+      // Send consolidated message - use critical send with limited retries (1 retry max)
+      // to avoid blocking workflow execution while still catching transient failures
+      const startupSent = await sendCriticalMessage(
+        platform,
+        conversationId,
+        startupMessage,
+        workflowContext,
+        2, // maxRetries=2 means 2 total attempts (1 initial + 1 retry), 1s max delay
+        {
+          category: 'workflow_status',
+          segment: 'new',
+          workflowRun: {
+            workflowName: workflow.name,
+            runId: workflowRun.id,
+          },
+        }
       );
-      // Continue anyway - workflow is already recorded in database
+      if (!startupSent) {
+        getLog().error(
+          { workflowId: workflowRun.id, conversationId },
+          'startup_message_delivery_failed'
+        );
+        // Continue anyway - workflow is already recorded in database
+      }
     }
 
     // Execute the DAG workflow
