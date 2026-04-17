@@ -247,7 +247,6 @@ function normalizeCardMarkdown(text: string): string {
     .replace(/^>\s?/gm, '')
     .replace(/^#{1,6}\s+(.+)$/gm, '**$1**')
     .replace(/^(\s*)[-*]\s+/gm, '$1• ')
-    .replace(/^(\s*)\d+\.\s+/gm, '$1• ')
     .replace(/```([\s\S]*?)```/g, (_, code: string) => code.trim())
     .replace(/`([^`]+)`/g, '$1')
     .trim()

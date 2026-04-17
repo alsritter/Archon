@@ -238,6 +238,11 @@ describe('FeishuAdapter', () => {
     const card = JSON.parse(body.content) as {
       elements?: Array<Record<string, unknown>>;
     };
+    const content = String(
+      (card.elements?.[0] as { text?: { content?: string } } | undefined)?.text?.content ?? ''
+    );
+    expect(content).toContain('1. 需求 A | record_id:rec_123');
+    expect(content).toContain('2. 需求 B | record_id:rec_456');
     const actionBlock = card.elements?.find(element => 'actions' in element) as
       | { actions?: Array<unknown> }
       | undefined;
