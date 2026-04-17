@@ -245,6 +245,20 @@ streaming:
       expect(config.streaming.telegram).toBe('batch');
     });
 
+    test('merges defaults from global config', async () => {
+      mockReadConfigFile.mockResolvedValue(`
+defaults:
+  loadDefaultWorkflows: false
+  loadDefaultCommands: false
+`);
+
+      const config = await loadConfig();
+
+      expect(config.defaults.loadDefaultWorkflows).toBe(false);
+      expect(config.defaults.loadDefaultCommands).toBe(false);
+      expect(config.defaults.copyDefaults).toBe(true);
+    });
+
     test('throws on unknown DEFAULT_AI_ASSISTANT env var', async () => {
       mockReadConfigFile.mockResolvedValue('');
       process.env.DEFAULT_AI_ASSISTANT = 'nonexistent-provider';

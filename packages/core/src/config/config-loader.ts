@@ -369,6 +369,18 @@ function mergeGlobalConfig(defaults: MergedConfig, global: GlobalConfig): Merged
     result.concurrency.maxConversations = global.concurrency.maxConversations;
   }
 
+  // Global defaults preferences
+  if (global.defaults) {
+    result.defaults = {
+      ...result.defaults,
+      copyDefaults: global.defaults.copyDefaults ?? result.defaults.copyDefaults,
+      loadDefaultCommands:
+        global.defaults.loadDefaultCommands ?? result.defaults.loadDefaultCommands,
+      loadDefaultWorkflows:
+        global.defaults.loadDefaultWorkflows ?? result.defaults.loadDefaultWorkflows,
+    };
+  }
+
   return result;
 }
 

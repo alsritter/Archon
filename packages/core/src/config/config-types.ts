@@ -92,6 +92,33 @@ export interface GlobalConfig {
      */
     maxConversations?: number;
   };
+
+  /**
+   * Global default commands/workflows configuration
+   */
+  defaults?: {
+    /**
+     * Copy bundled default commands and workflows on clone
+     * Set to false to skip copying defaults
+     * @default true
+     * @deprecated Use loadDefaultCommands/loadDefaultWorkflows instead
+     */
+    copyDefaults?: boolean;
+
+    /**
+     * Load app's bundled default commands at runtime
+     * Set to false to only use repo-specific commands
+     * @default true
+     */
+    loadDefaultCommands?: boolean;
+
+    /**
+     * Load app's bundled default workflows at runtime
+     * Set to false to only use repo-specific workflows
+     * @default true
+     */
+    loadDefaultWorkflows?: boolean;
+  };
 }
 
 /**
