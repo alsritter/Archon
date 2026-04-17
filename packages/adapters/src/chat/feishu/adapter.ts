@@ -91,8 +91,10 @@ function getBaseUrl(domain: FeishuDomain, override?: string): string {
 function stripFeishuMentions(text: string): string {
   return text
     .replace(/<at\b[^>]*>.*?<\/at>/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+    .split('\n')
+    .map(line => line.replace(/[ \t]+/g, ' ').trim())
+    .filter(Boolean)
+    .join('\n');
 }
 
 function normalizeFeishuCommandText(text: string): string {
@@ -114,6 +116,43 @@ function normalizeFeishuCommandText(text: string): string {
   return trimmed;
 }
 
+function extractFeishuRichText(rawValue: unknown): string {
+  if (typeof rawValue === 'string') return rawValue;
+  if (!rawValue || typeof rawValue !== 'object') return '';
+
+  if (Array.isArray(rawValue)) {
+    const parts = rawValue.map(item => extractFeishuRichText(item)).filter(Boolean);
+    const delimiter = rawValue.every(item => Array.isArray(item)) ? '\n' : '';
+    return parts.join(delimiter).trim();
+  }
+
+  const record = rawValue as Record<string, unknown>;
+  if (record.tag === 'at') {
+    return '';
+  }
+  if (typeof record.text === 'string') {
+    return record.text;
+  }
+
+  if (record.post) {
+    const postText = extractFeishuRichText(record.post);
+    if (postText) return postText;
+  }
+
+  if (record.content) {
+    const contentText = extractFeishuRichText(record.content);
+    if (contentText) return contentText;
+  }
+
+  const nestedText = Object.values(record)
+    .map(value => extractFeishuRichText(value))
+    .filter(Boolean)
+    .join('\n')
+    .trim();
+
+  return nestedText;
+}
+
 function parseTextContent(rawContent: string | undefined): string {
   if (!rawContent) return '';
   try {
@@ -121,8 +160,12 @@ function parseTextContent(rawContent: string | undefined): string {
     if (typeof parsed.text === 'string') {
       return normalizeFeishuCommandText(stripFeishuMentions(parsed.text));
     }
+    const richText = extractFeishuRichText(parsed);
+    if (richText) {
+      return normalizeFeishuCommandText(stripFeishuMentions(richText));
+    }
   } catch {
-    // Ignore malformed payloads - caller treats empty text as unsupported
+    return normalizeFeishuCommandText(stripFeishuMentions(rawContent));
   }
   return '';
 }
@@ -699,12 +742,20 @@ export class FeishuAdapter implements IPlatformAdapter {
 
   private async handleIncomingMessage(data: ReceiveMessageEvent): Promise<void> {
     const message = data.message;
-    if (message.message_type !== 'text') {
+    if (message.message_type !== 'text' && message.message_type !== 'post') {
+      getLog().info({ messageType: message.message_type }, 'feishu.unsupported_message_type');
       return;
     }
 
     const text = parseTextContent(message.content);
     if (!text) {
+      getLog().warn(
+        {
+          messageType: message.message_type,
+          contentPreview: message.content?.slice(0, 500),
+        },
+        'feishu.empty_text_message'
+      );
       return;
     }
 

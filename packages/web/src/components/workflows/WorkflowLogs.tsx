@@ -12,6 +12,7 @@ import type { ToolEvent } from './WorkflowExecution';
 interface WorkflowLogsProps {
   conversationId: string;
   startedAt?: number;
+  endedAt?: number | null;
   isRunning?: boolean;
   currentlyExecuting?: { nodeName: string; startedAt: number } | null;
   toolEvents?: ToolEvent[];
@@ -24,6 +25,7 @@ interface WorkflowLogsProps {
 function hydrateMessages(
   rows: MessageResponse[],
   startedAt?: number,
+  endedAt?: number | null,
   toolEvents?: ToolEvent[]
 ): ChatMessage[] {
   const hydrated: ChatMessage[] = rows.map(row => {
@@ -65,7 +67,11 @@ function hydrateMessages(
     };
   });
 
-  const filtered = startedAt ? hydrated.filter(m => m.timestamp >= startedAt) : hydrated;
+  const filtered = hydrated.filter(m => {
+    if (startedAt && m.timestamp < startedAt) return false;
+    if (endedAt != null && m.timestamp > endedAt) return false;
+    return true;
+  });
 
   // Attach tool events from workflow_events table to assistant messages.
   //
@@ -100,6 +106,8 @@ function hydrateMessages(
     const unattached: ToolCallDisplay[] = [];
     for (const te of toolEvents) {
       const teTimestamp = new Date(ensureUtc(te.createdAt)).getTime();
+      if (startedAt && teTimestamp < startedAt) continue;
+      if (endedAt != null && teTimestamp > endedAt) continue;
 
       // Check if this tool event matches an existing metadata tool call.
       // Match by same name and timestamp within 60s (tool events fire at start,
@@ -177,6 +185,7 @@ function hydrateMessages(
 export function WorkflowLogs({
   conversationId,
   startedAt,
+  endedAt,
   isRunning,
   currentlyExecuting,
   toolEvents,
@@ -203,15 +212,17 @@ export function WorkflowLogs({
 
   // Poll for messages from DB — 3s while running (or during grace period), disabled when terminal.
   // staleTime: 0 ensures post-completion navigation always fetches fresh data on mount.
-  const { data: queryMessages } = useQuery({
+  const { data: messageRows } = useQuery({
     queryKey: ['workflowMessages', conversationId],
-    queryFn: async (): Promise<ChatMessage[]> => {
-      const rows = await getMessages(conversationId);
-      return hydrateMessages(rows, startedAt, toolEvents);
-    },
+    queryFn: () => getMessages(conversationId),
     refetchInterval: isRunning || gracePolling ? 3000 : false,
     staleTime: 0,
   });
+
+  const queryMessages = useMemo(
+    () => (messageRows ? hydrateMessages(messageRows, startedAt, endedAt, toolEvents) : undefined),
+    [messageRows, startedAt, endedAt, toolEvents]
+  );
 
   // When workflow transitions from running → terminal, keep polling for 6 more seconds
   // (2 extra cycles) to catch late DB flushes, then do a final invalidation.

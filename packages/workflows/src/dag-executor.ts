@@ -1865,6 +1865,14 @@ async function executeLoopNode(
     // completion signal. The user reviews the AI's output and provides feedback or approval.
     // On approval, the AI will emit the signal in the next iteration, exiting above.
     if (loop.interactive && loop.gate_message) {
+      if (isLoopResume && !cleanOutput.trim()) {
+        await safeSendMessage(
+          platform,
+          conversationId,
+          `Received your latest input for loop '${node.id}', but this pass did not produce a visible reply. The next prompt below is continuing from your message, not ignoring it.`,
+          msgContext
+        );
+      }
       const gateMsg =
         `\u23f8 **Input required** (loop \`${node.id}\`, iteration ${String(i)}): ${loop.gate_message}\n\n` +
         `Run ID: \`${workflowRun.id}\`\n` +

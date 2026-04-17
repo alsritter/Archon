@@ -45,7 +45,7 @@ export function layoutWithDagre(
 
 export function resolveNodeDisplay(dn: DagNode): {
   label: string;
-  nodeType: 'command' | 'prompt' | 'bash';
+  nodeType: 'command' | 'prompt' | 'bash' | 'script' | 'approval' | 'loop';
   promptText?: string;
   bashScript?: string;
   bashTimeout?: number;
@@ -58,6 +58,28 @@ export function resolveNodeDisplay(dn: DagNode): {
       bashTimeout: dn.timeout,
     };
   }
+  if ('script' in dn && dn.script) {
+    return {
+      label: 'Script',
+      nodeType: 'script',
+      bashScript: dn.script,
+      bashTimeout: dn.timeout,
+    };
+  }
+  if ('approval' in dn && dn.approval) {
+    return {
+      label: 'Approval',
+      nodeType: 'approval',
+      promptText: dn.approval.message,
+    };
+  }
+  if ('loop' in dn && dn.loop) {
+    return {
+      label: 'Loop',
+      nodeType: 'loop',
+      promptText: dn.loop.prompt,
+    };
+  }
   if ('command' in dn && dn.command) {
     return { label: dn.command, nodeType: 'command' };
   }
@@ -68,7 +90,45 @@ export function resolveNodeDisplay(dn: DagNode): {
   };
 }
 
-export function dagNodesToReactFlow(dagNodes: readonly DagNode[]): {
+function hasAlternatePath(
+  adjacency: Map<string, string[]>,
+  source: string,
+  target: string,
+  skippedEdgeId: string
+): boolean {
+  const stack = [source];
+  const visited = new Set<string>([source]);
+
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current) continue;
+    for (const next of adjacency.get(current) ?? []) {
+      if (`${current}->${next}` === skippedEdgeId) continue;
+      if (next === target) return true;
+      if (visited.has(next)) continue;
+      visited.add(next);
+      stack.push(next);
+    }
+  }
+
+  return false;
+}
+
+function reduceTransitiveEdges(edges: Edge[]): Edge[] {
+  const adjacency = new Map<string, string[]>();
+  for (const edge of edges) {
+    const neighbors = adjacency.get(edge.source) ?? [];
+    neighbors.push(edge.target);
+    adjacency.set(edge.source, neighbors);
+  }
+
+  return edges.filter(edge => !hasAlternatePath(adjacency, edge.source, edge.target, edge.id));
+}
+
+export function dagNodesToReactFlow(
+  dagNodes: readonly DagNode[],
+  options?: { reduceTransitiveEdges?: boolean }
+): {
   nodes: DagFlowNode[];
   edges: Edge[];
 } {
@@ -94,7 +154,9 @@ export function dagNodesToReactFlow(dagNodes: readonly DagNode[]): {
     }
   }
 
-  const { nodes: layouted, edges: layoutedEdges } = layoutWithDagre(nodes, edges);
+  const displayEdges = options?.reduceTransitiveEdges ? reduceTransitiveEdges(edges) : edges;
+
+  const { nodes: layouted, edges: layoutedEdges } = layoutWithDagre(nodes, displayEdges);
   return { nodes: layouted, edges: layoutedEdges };
 }
 

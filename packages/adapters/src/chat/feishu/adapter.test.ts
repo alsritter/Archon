@@ -349,6 +349,85 @@ describe('FeishuAdapter', () => {
     expect(addMessageMock).toHaveBeenCalledWith('conv-db-1', 'user', 'hello there');
   });
 
+  test('receive event accepts Feishu post messages and preserves multiline numbered text', async () => {
+    const adapter = new FeishuAdapter('app-id', 'app-secret');
+    const received: string[] = [];
+
+    adapter.onMessage(async ctx => {
+      received.push(`${ctx.conversationId}::${ctx.message}`);
+    });
+
+    await adapter.start();
+    await registeredHandlers['im.message.receive_v1']?.({
+      sender: { sender_id: { open_id: 'ou_123' }, sender_type: 'user' },
+      message: {
+        message_id: 'om_post_1',
+        root_id: 'om_root_post_1',
+        chat_id: 'oc_group_1',
+        chat_type: 'group',
+        message_type: 'post',
+        content: JSON.stringify({
+          zh_cn: {
+            title: 'ignored',
+            content: [
+              [
+                { tag: 'at', user_id: 'ou_bot' },
+                { tag: 'text', text: ' 指的是 lazygpt-next' },
+              ],
+              [{ tag: 'text', text: '1. 当前更偏向问题+答案一起去重' }],
+              [{ tag: 'text', text: '2. 同一个问题在不同商品下答案不同' }],
+            ],
+          },
+        }),
+      },
+    });
+
+    expect(received).toEqual([
+      'chat:oc_group_1:thread:om_root_post_1::指的是 lazygpt-next\n1. 当前更偏向问题+答案一起去重\n2. 同一个问题在不同商品下答案不同',
+    ]);
+    expect(addMessageMock).toHaveBeenCalledWith(
+      'conv-db-1',
+      'user',
+      '指的是 lazygpt-next\n1. 当前更偏向问题+答案一起去重\n2. 同一个问题在不同商品下答案不同'
+    );
+  });
+
+  test('receive event accepts post payloads wrapped under post.zh_cn', async () => {
+    const adapter = new FeishuAdapter('app-id', 'app-secret');
+    const received: string[] = [];
+
+    adapter.onMessage(async ctx => {
+      received.push(ctx.message);
+    });
+
+    await adapter.start();
+    await registeredHandlers['im.message.receive_v1']?.({
+      sender: { sender_id: { open_id: 'ou_123' }, sender_type: 'user' },
+      message: {
+        message_id: 'om_post_2',
+        root_id: 'om_root_post_2',
+        chat_id: 'oc_group_1',
+        chat_type: 'group',
+        message_type: 'post',
+        content: JSON.stringify({
+          post: {
+            zh_cn: {
+              title: 'ignored',
+              content: [
+                [
+                  { tag: 'at', user_id: 'ou_bot' },
+                  { tag: 'text', text: ' 开票、运费、快递按问题本身去重' },
+                ],
+              ],
+            },
+          },
+        }),
+      },
+    });
+
+    expect(received).toEqual(['开票、运费、快递按问题本身去重']);
+  });
+
   test('receive event strips leading @mention before slash commands', async () => {
     const adapter = new FeishuAdapter('app-id', 'app-secret');
     const received: string[] = [];

@@ -29,12 +29,16 @@ const TYPE_COLORS: Record<string, string> = {
   command: 'text-purple-400',
   prompt: 'text-accent-bright',
   bash: 'text-amber-400',
+  script: 'text-node-script',
+  approval: 'text-node-approval',
   loop: 'text-orange-400',
 };
 
 const TYPE_LABELS: Record<string, string> = {
   command: 'CMD',
   bash: 'BASH',
+  script: 'SCRIPT',
+  approval: 'APPROVAL',
   prompt: 'PROMPT',
   loop: 'LOOP',
 };

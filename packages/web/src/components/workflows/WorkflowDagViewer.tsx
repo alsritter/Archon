@@ -58,7 +58,7 @@ export function WorkflowDagViewer({
   // Compute topology layout ONCE from the workflow definition.
   // Only re-layout when the definition changes (node/edge count), not on status updates.
   const { baseNodes, edges: layoutedEdges } = useMemo(() => {
-    const { nodes, edges } = dagNodesToReactFlow(dagNodes);
+    const { nodes, edges } = dagNodesToReactFlow(dagNodes, { reduceTransitiveEdges: true });
     return { baseNodes: nodes, edges };
   }, [dagNodes]);
 

@@ -3594,6 +3594,71 @@ describe('executeDagWorkflow -- resume with priorCompletedNodes', () => {
       expect(sessionArg).toBe('loop-session-1');
     });
 
+    it('interactive loop resume with empty visible output sends an explicit notice before re-gating', async () => {
+      mockSendQueryDag.mockImplementation(function* () {
+        yield { type: 'result', sessionId: 'loop-session-empty' };
+      });
+
+      const mockDeps = createMockDeps();
+      const platform = createMockPlatform();
+      const workflowRun = makeWorkflowRun('resumed-empty-run-id', {
+        metadata: {
+          approval: {
+            type: 'interactive_loop',
+            nodeId: 'refine',
+            iteration: 1,
+            sessionId: 'loop-session-1',
+            message: 'Review the plan.',
+          },
+          loop_user_input: 'The failure happens on long-running automation jobs.',
+        },
+      });
+
+      await executeDagWorkflow(
+        mockDeps,
+        platform,
+        'conv-dag',
+        testDir,
+        {
+          name: 'interactive-loop-resume-empty-output',
+          nodes: [
+            {
+              id: 'refine',
+              loop: {
+                prompt: 'User said: $LOOP_USER_INPUT. Refine the plan.',
+                until: 'APPROVED',
+                max_iterations: 10,
+                interactive: true,
+                gate_message: 'Review the plan.',
+              },
+            },
+          ],
+        },
+        workflowRun,
+        'claude',
+        undefined,
+        join(testDir, 'artifacts'),
+        join(testDir, 'logs'),
+        'main',
+        'docs/',
+        minimalConfig
+      );
+
+      const sendMessage = platform.sendMessage as Mock<
+        (
+          conversationId: string,
+          message: string,
+          metadata?: Record<string, unknown>
+        ) => Promise<void>
+      >;
+      const messages = sendMessage.mock.calls.map((call: unknown[]) => call[1] as string);
+      expect(messages).toContain(
+        "Received your latest input for loop 'refine', but this pass did not produce a visible reply. The next prompt below is continuing from your message, not ignoring it."
+      );
+      expect(messages.at(-1)).toContain('Input required');
+      expect(messages.at(-1)).toContain('Review the plan.');
+    });
+
     it('non-interactive loop is unaffected (no pause)', async () => {
       mockSendQueryDag.mockImplementation(function* () {
         yield { type: 'assistant', content: 'Still working...' };

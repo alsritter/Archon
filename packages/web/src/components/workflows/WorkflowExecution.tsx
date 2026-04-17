@@ -454,20 +454,28 @@ export function WorkflowExecution({ runId }: WorkflowExecutionProps): React.Reac
   }, [queryData?.events, selectedDagNode]);
 
   // Compute start timestamps for each DAG node from workflow events.
-  // Used to scroll the logs panel to the right position when a node is selected.
-  const nodeStartTimes = useMemo((): Map<string, number> => {
-    const map = new Map<string, number>();
-    for (const e of queryData?.events ?? []) {
-      if (e.event_type === 'node_started' && e.step_name) {
-        map.set(e.step_name, new Date(ensureUtc(e.created_at)).getTime());
-      }
-    }
-    return map;
-  }, [queryData?.events]);
+  // Used to filter logs down to the selected node's execution window.
+  const selectedNodeWindow = useMemo((): { startedAt: number; endedAt: number | null } | null => {
+    if (!selectedDagNode) return null;
+    const events = queryData?.events ?? [];
+    const startEvent = events.find(
+      e => e.event_type === 'node_started' && e.step_name === selectedDagNode
+    );
+    if (!startEvent) return null;
 
-  const scrollToNodeTimestamp = selectedDagNode
-    ? (nodeStartTimes.get(selectedDagNode) ?? null)
-    : null;
+    const endEvent = events.find(
+      e =>
+        e.step_name === selectedDagNode &&
+        (e.event_type === 'node_completed' ||
+          e.event_type === 'node_failed' ||
+          e.event_type === 'node_skipped')
+    );
+
+    return {
+      startedAt: new Date(ensureUtc(startEvent.created_at)).getTime(),
+      endedAt: endEvent ? new Date(ensureUtc(endEvent.created_at)).getTime() : null,
+    };
+  }, [queryData?.events, selectedDagNode]);
 
   // Handler for user-initiated node clicks (graph or sidebar).
   // Increments scroll trigger so WorkflowLogs scrolls to the node's section.
@@ -519,11 +527,12 @@ export function WorkflowExecution({ runId }: WorkflowExecutionProps): React.Reac
         ) : logsPlatformId ? (
           <WorkflowLogs
             conversationId={logsPlatformId}
-            startedAt={initialData?.startedAt}
+            startedAt={selectedNodeWindow?.startedAt ?? initialData?.startedAt}
+            endedAt={selectedNodeWindow?.endedAt ?? null}
             isRunning={isRunning}
             currentlyExecuting={currentlyExecuting}
             toolEvents={toolEvents}
-            scrollToNodeTimestamp={scrollToNodeTimestamp}
+            scrollToNodeTimestamp={selectedNodeWindow?.startedAt ?? null}
             nodeScrollTrigger={nodeScrollTrigger}
           />
         ) : (
