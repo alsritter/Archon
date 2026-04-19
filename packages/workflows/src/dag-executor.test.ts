@@ -718,6 +718,13 @@ describe('substituteNodeOutputRefs', () => {
     ]);
     expect(substituteNodeOutputRefs('Route $a.output.type now', outputs)).toBe('Route FEATURE now');
   });
+
+  it('renders missing payload as null for inline script substitution', () => {
+    const outputs = new Map([['a', { state: 'completed' as const, output: '{"ok":true}' }]]);
+    expect(substituteNodeOutputRefs('const payload = $a.payload;', outputs, 'script')).toBe(
+      'const payload = null;'
+    );
+  });
 });
 
 describe('substituteNodeOutputRefs -- shell escaping', () => {

@@ -2020,9 +2020,30 @@ export function registerApiRoutes(
         status: 'failed',
         metadata: metadataUpdate,
       });
+
+      let conversation: Awaited<ReturnType<typeof conversationDb.getConversationById>> | null =
+        null;
+      if (run.conversation_id != null) {
+        try {
+          conversation = await conversationDb.getConversationById(run.conversation_id);
+        } catch {
+          conversation = null;
+        }
+      }
+      if (conversation?.platform_conversation_id) {
+        const resumeMessage = `/workflow run ${run.workflow_name}${
+          run.user_message ? ` ${run.user_message}` : ''
+        }`;
+        await dispatchToOrchestrator(conversation.platform_conversation_id, resumeMessage);
+        return c.json({
+          success: true,
+          message: `Workflow approved and resume dispatched: ${run.workflow_name}`,
+        });
+      }
+
       return c.json({
         success: true,
-        message: `Workflow approved: ${run.workflow_name}. Send a message to continue the workflow.`,
+        message: `Workflow approved: ${run.workflow_name}. Re-run the workflow to continue execution.`,
       });
     } catch (error) {
       getLog().error({ err: error, runId }, 'api.workflow_run_approve_failed');

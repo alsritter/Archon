@@ -217,8 +217,11 @@ function shellQuote(value: string): string {
 export function substituteNodeOutputRefs(
   prompt: string,
   nodeOutputs: Map<string, NodeOutput>,
-  escapedForBash = false
+  mode: boolean | 'script' = false
 ): string {
+  const escapedForBash = mode === true;
+  const scriptMode = mode === 'script';
+
   const stringifyValue = (value: unknown): string => {
     if (typeof value === 'string') return value;
     if (typeof value === 'number' || typeof value === 'boolean') return String(value);
@@ -245,7 +248,10 @@ export function substituteNodeOutputRefs(
         return escapedForBash ? "''" : '';
       }
       if (source === 'payload') {
-        if (nodeOutput.payload === undefined) return escapedForBash ? "''" : '';
+        if (nodeOutput.payload === undefined) {
+          if (scriptMode && !field) return 'null';
+          return escapedForBash ? "''" : '';
+        }
         const payloadText = field
           ? (objectFieldValue(nodeOutput.payload, field) ?? '')
           : stringifyValue(nodeOutput.payload);
@@ -1306,7 +1312,11 @@ async function executeScriptNode(
     docsDir,
     issueContext
   );
-  const finalScript = substituteNodeOutputRefs(substitutedScript, nodeOutputs, false);
+  const finalScript = substituteNodeOutputRefs(
+    substitutedScript,
+    nodeOutputs,
+    isInlineScript(substitutedScript) ? 'script' : false
+  );
 
   const timeout = node.timeout ?? SUBPROCESS_DEFAULT_TIMEOUT;
   const subprocessEnv =

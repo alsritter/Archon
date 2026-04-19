@@ -1205,6 +1205,8 @@ const MOCK_PAUSED_RUN: MockWorkflowRun = {
 describe('POST /api/workflows/runs/:runId/approve', () => {
   beforeEach(() => {
     mockGetWorkflowRun.mockReset();
+    mockGetConversationById.mockReset();
+    mockHandleMessage.mockReset();
     mockUpdateWorkflowRun.mockReset();
     mockCreateWorkflowEvent.mockReset();
   });
@@ -1274,6 +1276,35 @@ describe('POST /api/workflows/runs/:runId/approve', () => {
     expect(nodeCompletedCall?.[0]).toMatchObject({
       data: { node_output: '', approval_decision: 'approved' },
     });
+  });
+
+  test('dispatches the approved workflow back into the original conversation', async () => {
+    mockGetWorkflowRun.mockResolvedValueOnce({
+      ...MOCK_PAUSED_RUN,
+      workflow_name: 'story-pending-review-enrich',
+      user_message: '',
+    });
+    mockGetConversationById.mockResolvedValueOnce({
+      id: 'conv-uuid-1',
+      platform_conversation_id: 'web-conv-abc',
+    });
+
+    const { app } = makeApp();
+    const response = await app.request('/api/workflows/runs/run-paused-1/approve', {
+      method: 'POST',
+      body: JSON.stringify({ comment: '@_user_1 4' }),
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    expect(response.status).toBe(200);
+    expect(mockHandleMessage).toHaveBeenCalledWith(
+      expect.anything(),
+      'web-conv-abc',
+      '/workflow run story-pending-review-enrich',
+      expect.objectContaining({
+        isolationHints: { workflowType: 'thread', workflowId: 'web-conv-abc' },
+      })
+    );
   });
 });
 
