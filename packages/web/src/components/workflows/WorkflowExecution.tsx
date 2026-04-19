@@ -25,6 +25,7 @@ import { ensureUtc, formatDurationMs } from '@/lib/format';
 import { selectInitialNode } from '@/lib/select-initial-node';
 import { cn } from '@/lib/utils';
 import { getWorkflowRunDisplayStatus, isActiveWorkflowRun } from '@/lib/workflow-utils';
+import { useIsMobile } from '@/hooks/useIsMobile';
 import {
   buildWorkflowConversationTitle,
   findWorkflowNode,
@@ -137,10 +138,7 @@ export function WorkflowExecution({ runId }: WorkflowExecutionProps): React.Reac
   const [codebaseCwd, setCodebaseCwd] = useState<string | null>(null);
   const [workerRunId, setWorkerRunId] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<'graph' | 'logs' | 'chat'>('graph');
-  const [isMobile, setIsMobile] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return false;
-    return window.matchMedia('(max-width: 767px)').matches;
-  });
+  const isMobile = useIsMobile();
   const [isMobileGraphDetailsOpen, setIsMobileGraphDetailsOpen] = useState(false);
   const [hasManuallySelectedNode, setHasManuallySelectedNode] = useState(false);
   // Increments on every user-initiated node click to trigger scroll in WorkflowLogs
@@ -162,21 +160,10 @@ export function WorkflowExecution({ runId }: WorkflowExecutionProps): React.Reac
   }, [runId]);
 
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const mediaQuery = window.matchMedia('(max-width: 767px)');
-    const handleChange = (event: MediaQueryListEvent): void => {
-      setIsMobile(event.matches);
-      if (!event.matches) {
-        setIsMobileGraphDetailsOpen(false);
-      }
-    };
-
-    setIsMobile(mediaQuery.matches);
-    mediaQuery.addEventListener('change', handleChange);
-    return (): void => {
-      mediaQuery.removeEventListener('change', handleChange);
-    };
-  }, []);
+    if (!isMobile) {
+      setIsMobileGraphDetailsOpen(false);
+    }
+  }, [isMobile]);
 
   // Fetch workflow run data with polling while running
   const { data: queryData, error: queryError } = useQuery({

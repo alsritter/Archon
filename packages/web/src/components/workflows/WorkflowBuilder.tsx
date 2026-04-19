@@ -19,6 +19,7 @@ import { dagNodesToReactFlow } from '@/lib/dag-layout';
 import { useBuilderKeyboard } from '@/hooks/useBuilderKeyboard';
 import { useBuilderUndo } from '@/hooks/useBuilderUndo';
 import { useBuilderValidation } from '@/hooks/useBuilderValidation';
+import { useIsMobile } from '@/hooks/useIsMobile';
 import type { ValidationIssue } from '@/hooks/useBuilderValidation';
 import { BuilderToolbar } from './BuilderToolbar';
 import type { ViewMode } from './BuilderToolbar';
@@ -135,15 +136,11 @@ function WorkflowBuilderInner(): React.ReactElement {
 
   const [yamlViewMode, setYamlViewMode] = useState<ViewMode>('hidden');
   const [validationPanelOpen, setValidationPanelOpen] = useState(false);
+  const isMobile = useIsMobile();
   const [showLibrary, setShowLibrary] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return true;
-    return !window.matchMedia('(max-width: 767px)').matches;
+    return true;
   });
   const [showMobileInspector, setShowMobileInspector] = useState(false);
-  const [isMobile, setIsMobile] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return false;
-    return window.matchMedia('(max-width: 767px)').matches;
-  });
 
   // DAG state
   const [nodes, setNodes, onNodesChange] = useNodesState<DagFlowNode>([]);
@@ -260,21 +257,11 @@ function WorkflowBuilderInner(): React.ReactElement {
   }, [commandPreviewMap, setNodes]);
 
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const mediaQuery = window.matchMedia('(max-width: 767px)');
-    const handleChange = (event: MediaQueryListEvent): void => {
-      setIsMobile(event.matches);
-      setShowLibrary(!event.matches);
-      if (!event.matches) {
-        setShowMobileInspector(false);
-      }
-    };
-    setIsMobile(mediaQuery.matches);
-    mediaQuery.addEventListener('change', handleChange);
-    return (): void => {
-      mediaQuery.removeEventListener('change', handleChange);
-    };
-  }, []);
+    setShowLibrary(!isMobile);
+    if (!isMobile) {
+      setShowMobileInspector(false);
+    }
+  }, [isMobile]);
 
   useEffect(() => {
     if (!selectedNodeId) {
