@@ -93,7 +93,7 @@ function createMockStore(): IWorkflowStore {
     pauseWorkflowRun: mock(() => Promise.resolve()),
     cancelWorkflowRun: mock(() => Promise.resolve()),
     createWorkflowEvent: mock(() => Promise.resolve()),
-    getCompletedDagNodeOutputs: mock(() => Promise.resolve(new Map<string, string>())),
+    getCompletedDagNodeOutputs: mock(() => Promise.resolve(new Map<string, NodeOutput>())),
     getCodebase: mock(() => Promise.resolve(null)),
     getCodebaseEnvVars: mock(() => Promise.resolve({})),
   };
@@ -693,6 +693,30 @@ describe('substituteNodeOutputRefs', () => {
     const outputs = new Map([['a', makeOutput('completed', 'not-json')]]);
     expect(substituteNodeOutputRefs('$a.output.field', outputs)).toBe('');
   });
+
+  it('reads structured payload fields directly', () => {
+    const outputs = new Map([
+      [
+        'a',
+        {
+          state: 'completed' as const,
+          output: 'summary',
+          payload: { type: 'BUG', confidence: 0.9 },
+        },
+      ],
+    ]);
+    expect(substituteNodeOutputRefs('Fix $a.payload.type issue', outputs)).toBe('Fix BUG issue');
+    expect(substituteNodeOutputRefs('Confidence $a.payload.confidence', outputs)).toBe(
+      'Confidence 0.9'
+    );
+  });
+
+  it('prefers payload for output field access when present', () => {
+    const outputs = new Map([
+      ['a', { state: 'completed' as const, output: 'not-json', payload: { type: 'FEATURE' } }],
+    ]);
+    expect(substituteNodeOutputRefs('Route $a.output.type now', outputs)).toBe('Route FEATURE now');
+  });
 });
 
 describe('substituteNodeOutputRefs -- shell escaping', () => {
@@ -757,6 +781,13 @@ describe('substituteNodeOutputRefs -- shell escaping', () => {
   it('dot notation on invalid JSON returns quoted empty string when escapedForBash=true', () => {
     const outputs = new Map([['a', makeOutput('completed', 'not-json')]]);
     expect(substituteNodeOutputRefs('$a.output.field', outputs, true)).toBe("''");
+  });
+
+  it('payload field escapes safely when escapedForBash=true', () => {
+    const outputs = new Map([
+      ['a', { state: 'completed' as const, output: 'summary', payload: { cmd: 'foo; bar' } }],
+    ]);
+    expect(substituteNodeOutputRefs('echo $a.payload.cmd', outputs, true)).toBe("echo 'foo; bar'");
   });
 });
 

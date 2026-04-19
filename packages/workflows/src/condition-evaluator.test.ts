@@ -23,10 +23,13 @@ import type { NodeOutput } from './schemas';
 
 function makeOutput(
   output: string,
-  state: 'completed' | 'failed' | 'skipped' = 'completed'
+  state: 'completed' | 'failed' | 'skipped' = 'completed',
+  payload?: unknown
 ): NodeOutput {
-  if (state === 'failed') return { state, output, error: 'error' };
-  return { state, output };
+  if (state === 'failed') {
+    return { state, output, error: 'error', ...(payload !== undefined ? { payload } : {}) };
+  }
+  return { state, output, ...(payload !== undefined ? { payload } : {}) };
 }
 
 describe('evaluateCondition', () => {
@@ -131,6 +134,21 @@ describe('evaluateCondition', () => {
     );
     expect(evaluateCondition("$classify.output.run_tests == 'true'", outputs).result).toBe(false);
     expect(evaluateCondition("$classify.output.run_tests == 'false'", outputs).result).toBe(true);
+  });
+
+  it('payload dot notation: reads fields from structured payload', () => {
+    const outputs = new Map([
+      ['classify', makeOutput('summary', 'completed', { type: 'BUG', confidence: 0.9 })],
+    ]);
+    expect(evaluateCondition("$classify.payload.type == 'BUG'", outputs).result).toBe(true);
+    expect(evaluateCondition("$classify.payload.confidence == '0.9'", outputs).result).toBe(true);
+  });
+
+  it('output dot notation prefers payload when present', () => {
+    const outputs = new Map([
+      ['classify', makeOutput('not-json', 'completed', { type: 'FEATURE' })],
+    ]);
+    expect(evaluateCondition("$classify.output.type == 'FEATURE'", outputs).result).toBe(true);
   });
 
   // --- Numeric comparison operators ---

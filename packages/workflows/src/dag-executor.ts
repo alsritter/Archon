@@ -188,7 +188,7 @@ function shellQuote(value: string): string {
 }
 
 /**
- * Substitute $node_id.output and $node_id.output.field references in a prompt.
+ * Substitute $node_id.output / $node_id.payload and field references in a prompt.
  * Called AFTER the standard substituteWorkflowVariables pass.
  *
  * @param escapedForBash - When true, wraps substituted values in single quotes so
@@ -200,16 +200,42 @@ export function substituteNodeOutputRefs(
   nodeOutputs: Map<string, NodeOutput>,
   escapedForBash = false
 ): string {
+  const stringifyValue = (value: unknown): string => {
+    if (typeof value === 'string') return value;
+    if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+    if (value === null || value === undefined) return '';
+    return JSON.stringify(value);
+  };
+
+  const objectFieldValue = (value: unknown, field: string | undefined): string | undefined => {
+    if (!field) return undefined;
+    if (value == null || typeof value !== 'object' || Array.isArray(value)) return undefined;
+    const fieldValue = (value as Record<string, unknown>)[field];
+    if (typeof fieldValue === 'string') return fieldValue;
+    if (typeof fieldValue === 'number' || typeof fieldValue === 'boolean')
+      return String(fieldValue);
+    return '';
+  };
+
   return prompt.replace(
-    /\$([a-zA-Z_][a-zA-Z0-9_-]*)\.output(?:\.([a-zA-Z_][a-zA-Z0-9_]*))?/g,
-    (match, nodeId: string, field: string | undefined) => {
+    /\$([a-zA-Z_][a-zA-Z0-9_-]*)\.(output|payload)(?:\.([a-zA-Z_][a-zA-Z0-9_]*))?/g,
+    (match, nodeId: string, source: 'output' | 'payload', field: string | undefined) => {
       const nodeOutput = nodeOutputs.get(nodeId);
       if (!nodeOutput) {
         getLog().warn({ nodeId, match }, 'dag_node_output_ref_unknown_node');
         return escapedForBash ? "''" : '';
       }
-      if (!field) {
-        return escapedForBash ? shellQuote(nodeOutput.output) : nodeOutput.output;
+      if (source === 'payload') {
+        if (nodeOutput.payload === undefined) return escapedForBash ? "''" : '';
+        const payloadText = field
+          ? (objectFieldValue(nodeOutput.payload, field) ?? '')
+          : stringifyValue(nodeOutput.payload);
+        return escapedForBash ? shellQuote(payloadText) : payloadText;
+      }
+      if (!field) return escapedForBash ? shellQuote(nodeOutput.output) : nodeOutput.output;
+      const payloadValue = objectFieldValue(nodeOutput.payload, field);
+      if (payloadValue !== undefined) {
+        return escapedForBash ? shellQuote(payloadValue) : payloadValue;
       }
       try {
         const parsed = JSON.parse(nodeOutput.output) as Record<string, unknown>;
@@ -2146,7 +2172,7 @@ export async function executeDagWorkflow(
   config: WorkflowConfig,
   configuredCommandFolder?: string,
   issueContext?: string,
-  priorCompletedNodes?: Map<string, string>
+  priorCompletedNodes?: Map<string, NodeOutput>
 ): Promise<string | undefined> {
   const dagStartTime = Date.now();
   const workflowLevelOptions = {
@@ -2163,7 +2189,7 @@ export async function executeDagWorkflow(
   // treated as done for trigger-rule and $nodeId.output substitution purposes.
   if (priorCompletedNodes && priorCompletedNodes.size > 0) {
     for (const [nodeId, output] of priorCompletedNodes) {
-      nodeOutputs.set(nodeId, { state: 'completed', output });
+      nodeOutputs.set(nodeId, output);
     }
     getLog().info(
       { workflowRunId: workflowRun.id, priorCompletedCount: priorCompletedNodes.size },

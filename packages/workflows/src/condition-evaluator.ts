@@ -24,12 +24,22 @@ function getLog(): ReturnType<typeof createLogger> {
 }
 
 /**
- * Resolve a `$nodeId.output` or `$nodeId.output.field` reference to a string value.
+ * Resolve a `$nodeId.output`, `$nodeId.payload`, or field reference to a string value.
  * Returns empty string if the node output is not found (logs warn), if the output is
  * empty/falsy (silent), or if JSON field access fails (logs warn).
  */
+function readObjectField(source: unknown, field: string | undefined): string | undefined {
+  if (!field) return undefined;
+  if (source == null || typeof source !== 'object' || Array.isArray(source)) return undefined;
+  const value = (source as Record<string, unknown>)[field];
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return '';
+}
+
 function resolveOutputRef(
   nodeId: string,
+  source: 'output' | 'payload',
   field: string | undefined,
   nodeOutputs: Map<string, NodeOutput>
 ): string {
@@ -38,17 +48,30 @@ function resolveOutputRef(
     getLog().warn({ nodeId }, 'condition_output_ref_unknown_node');
     return '';
   }
-  if (!nodeOutput.output) return '';
+  if (source === 'payload') {
+    if (nodeOutput.payload === undefined) return '';
+    if (!field) {
+      return typeof nodeOutput.payload === 'string'
+        ? nodeOutput.payload
+        : JSON.stringify(nodeOutput.payload);
+    }
+    const payloadValue = readObjectField(nodeOutput.payload, field);
+    return payloadValue ?? '';
+  }
 
   if (!field) return nodeOutput.output;
 
-  // Dot notation: parse JSON and access field
+  const payloadValue = readObjectField(nodeOutput.payload, field);
+  if (payloadValue !== undefined) return payloadValue;
+
+  if (!nodeOutput.output) return '';
+
   try {
     const parsed = JSON.parse(nodeOutput.output) as Record<string, unknown>;
     const value = parsed[field];
     if (typeof value === 'string') return value;
     if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-    return ''; // objects, null, undefined, symbol, bigint → empty
+    return '';
   } catch {
     getLog().warn(
       { nodeId, field, outputPreview: nodeOutput.output.slice(0, 100) },
@@ -85,7 +108,7 @@ function splitOutsideQuotes(expr: string, sep: string): string[] {
 
 /** Pattern matching a single condition atom: $nodeId.output[.field] OPERATOR 'value' */
 const atomPattern =
-  /^\$([a-zA-Z_][a-zA-Z0-9_-]*)\.output(?:\.([a-zA-Z_][a-zA-Z0-9_]*))?\s*(==|!=|<=|>=|<|>)\s*'([^']*)'$/;
+  /^\$([a-zA-Z_][a-zA-Z0-9_-]*)\.(output|payload)(?:\.([a-zA-Z_][a-zA-Z0-9_]*))?\s*(==|!=|<=|>=|<|>)\s*'([^']*)'$/;
 
 /**
  * Evaluate a single atomic condition expression against upstream node outputs.
@@ -102,14 +125,19 @@ function evaluateAtom(
     return { result: false, parsed: false };
   }
 
-  const [, nodeId, field, operator, expected] = match;
+  const [, nodeId, source, field, operator, expected] = match;
 
-  if (nodeId === undefined || operator === undefined || expected === undefined) {
+  if (
+    nodeId === undefined ||
+    source === undefined ||
+    operator === undefined ||
+    expected === undefined
+  ) {
     getLog().debug({ expr }, 'condition_parse_unexpected_undefined');
     return { result: false, parsed: false };
   }
 
-  const actual = resolveOutputRef(nodeId, field, nodeOutputs);
+  const actual = resolveOutputRef(nodeId, source as 'output' | 'payload', field, nodeOutputs);
 
   let result: boolean;
   if (operator === '==' || operator === '!=') {

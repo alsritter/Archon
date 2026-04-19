@@ -57,6 +57,19 @@ export type NodeState = z.infer<typeof nodeStateSchema>;
 // NodeOutput
 // ---------------------------------------------------------------------------
 
+export const jsonValueSchema: z.ZodType<
+  string | number | boolean | null | Record<string, unknown> | unknown[]
+> = z.lazy(() =>
+  z.union([
+    z.string(),
+    z.number(),
+    z.boolean(),
+    z.null(),
+    z.array(jsonValueSchema),
+    z.record(jsonValueSchema),
+  ])
+);
+
 /**
  * Captured output from a completed DAG node.
  * `output` is the concatenated assistant text (or JSON-encoded string from the SDK
@@ -67,17 +80,20 @@ export const nodeOutputSchema = z.discriminatedUnion('state', [
   z.object({
     state: z.enum(['completed', 'running']),
     output: z.string(),
+    payload: jsonValueSchema.optional(),
     sessionId: z.string().optional(),
   }),
   z.object({
     state: z.literal('failed'),
     output: z.string(),
+    payload: jsonValueSchema.optional(),
     sessionId: z.string().optional(),
     error: z.string(),
   }),
   z.object({
     state: z.enum(['pending', 'skipped']),
     output: z.string(),
+    payload: z.never().optional(),
   }),
 ]);
 

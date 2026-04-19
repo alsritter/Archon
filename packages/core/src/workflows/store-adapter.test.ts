@@ -111,7 +111,7 @@ describe('createWorkflowStore', () => {
   });
 
   test('delegates getCompletedDagNodeOutputs to DB', async () => {
-    const expected = new Map([['step1', 'output text']]);
+    const expected = new Map([['step1', { state: 'completed' as const, output: 'output text' }]]);
     mockGetCompletedDagNodeOutputs.mockResolvedValueOnce(expected);
     const store = createWorkflowStore();
     const result = await store.getCompletedDagNodeOutputs('run-123');
