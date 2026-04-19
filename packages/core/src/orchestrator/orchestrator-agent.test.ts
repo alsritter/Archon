@@ -1013,6 +1013,46 @@ describe('discoverAllWorkflows — remote sync', () => {
     });
   });
 
+  test('prefers project default cwd for provider queries when project is selected', async () => {
+    const conversation = makeConversation({
+      codebase_id: 'codebase-1',
+      cwd: '/worktrees/thread-123',
+    });
+    const codebase = makeCodebaseForSync();
+    mockGetOrCreateConversation.mockReturnValueOnce(Promise.resolve(conversation));
+    mockGetCodebase.mockImplementation(() => Promise.resolve(codebase));
+
+    const platform = makePlatform();
+    await handleMessage(platform, 'conv-1', 'What is the latest commit?');
+
+    expect(mockSendQuery).toHaveBeenCalled();
+    expect(mockSendQuery.mock.calls[0][1]).toBe('/repos/test-repo');
+  });
+
+  test('falls back to codebase default cwd for provider queries', async () => {
+    const conversation = makeConversation({ codebase_id: 'codebase-1', cwd: null });
+    const codebase = makeCodebaseForSync();
+    mockGetOrCreateConversation.mockReturnValueOnce(Promise.resolve(conversation));
+    mockGetCodebase.mockImplementation(() => Promise.resolve(codebase));
+
+    const platform = makePlatform();
+    await handleMessage(platform, 'conv-1', 'What is the latest commit?');
+
+    expect(mockSendQuery).toHaveBeenCalled();
+    expect(mockSendQuery.mock.calls[0][1]).toBe('/repos/test-repo');
+  });
+
+  test('falls back to conversation cwd when no project is selected', async () => {
+    const conversation = makeConversation({ codebase_id: null, cwd: '/worktrees/thread-123' });
+    mockGetOrCreateConversation.mockReturnValueOnce(Promise.resolve(conversation));
+
+    const platform = makePlatform();
+    await handleMessage(platform, 'conv-1', 'What is the latest commit?');
+
+    expect(mockSendQuery).toHaveBeenCalled();
+    expect(mockSendQuery.mock.calls[0][1]).toBe('/worktrees/thread-123');
+  });
+
   test('does not load codebase env vars when conversation has no codebase_id', async () => {
     mockGetOrCreateConversation.mockReturnValueOnce(Promise.resolve(makeConversation()));
 

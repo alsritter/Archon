@@ -799,7 +799,11 @@ export async function handleMessage(
       attachedFiles,
       workflowContext
     );
-    const cwd = getArchonWorkspacesPath();
+    const selectedCodebase = conversation.codebase_id
+      ? (codebases.find(codebase => codebase.id === conversation.codebase_id) ??
+        (await codebaseDb.getCodebase(conversation.codebase_id)))
+      : undefined;
+    const cwd = selectedCodebase?.default_cwd ?? conversation.cwd ?? getArchonWorkspacesPath();
 
     // 4. Update activity and get/create session
     await db.touchConversation(conversation.id);
