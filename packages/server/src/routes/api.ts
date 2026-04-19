@@ -66,11 +66,14 @@ const STALE_WORKFLOW_REASON = 'No workflow activity recorded for over 30 minutes
 
 interface WorkflowRunWithTimestamps {
   status: string;
-  last_activity_at: string | null;
+  last_activity_at: string | Date | null;
 }
 
-function parseRunTimestamp(value: string | null | undefined): number | null {
+function parseRunTimestamp(value: string | Date | null | undefined): number | null {
   if (!value) return null;
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value.getTime();
+  }
   const normalized = value.endsWith('Z') ? value : `${value}Z`;
   const parsed = Date.parse(normalized);
   return Number.isNaN(parsed) ? null : parsed;
