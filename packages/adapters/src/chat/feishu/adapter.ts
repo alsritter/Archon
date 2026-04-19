@@ -97,20 +97,34 @@ function stripFeishuMentions(text: string): string {
     .join('\n');
 }
 
-function normalizeFeishuCommandText(text: string): string {
+function normalizeFeishuCommandText(
+  text: string,
+  mentions?: ReceiveMessageEvent['message']['mentions']
+): string {
   const trimmed = text.trim();
   if (trimmed.startsWith('/')) {
     return trimmed;
   }
 
-  const slashIndex = trimmed.indexOf('/');
-  if (slashIndex <= 0) {
+  if (!mentions?.length) {
     return trimmed;
   }
 
-  const prefix = trimmed.slice(0, slashIndex).trim();
-  if (prefix.startsWith('@') && !prefix.includes('\n')) {
-    return trimmed.slice(slashIndex).trim();
+  let remainder = trimmed;
+  for (const mention of mentions) {
+    const name = mention.name?.trim();
+    if (!name) {
+      return trimmed;
+    }
+    const mentionToken = `@${name}`;
+    if (!remainder.startsWith(mentionToken)) {
+      return trimmed;
+    }
+    remainder = remainder.slice(mentionToken.length).trimStart();
+  }
+
+  if (remainder.startsWith('/')) {
+    return remainder;
   }
 
   return trimmed;
@@ -153,19 +167,22 @@ function extractFeishuRichText(rawValue: unknown): string {
   return nestedText;
 }
 
-function parseTextContent(rawContent: string | undefined): string {
+function parseTextContent(
+  rawContent: string | undefined,
+  mentions?: ReceiveMessageEvent['message']['mentions']
+): string {
   if (!rawContent) return '';
   try {
     const parsed = JSON.parse(rawContent) as { text?: unknown };
     if (typeof parsed.text === 'string') {
-      return normalizeFeishuCommandText(stripFeishuMentions(parsed.text));
+      return normalizeFeishuCommandText(stripFeishuMentions(parsed.text), mentions);
     }
     const richText = extractFeishuRichText(parsed);
     if (richText) {
-      return normalizeFeishuCommandText(stripFeishuMentions(richText));
+      return normalizeFeishuCommandText(stripFeishuMentions(richText), mentions);
     }
   } catch {
-    return normalizeFeishuCommandText(stripFeishuMentions(rawContent));
+    return normalizeFeishuCommandText(stripFeishuMentions(rawContent), mentions);
   }
   return '';
 }
@@ -761,7 +778,7 @@ export class FeishuAdapter implements IPlatformAdapter {
       return;
     }
 
-    const text = parseTextContent(message.content);
+    const text = parseTextContent(message.content, message.mentions);
     if (!text) {
       getLog().warn(
         {

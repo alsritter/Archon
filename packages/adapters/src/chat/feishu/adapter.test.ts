@@ -510,6 +510,13 @@ describe('FeishuAdapter', () => {
         chat_id: 'oc_123',
         chat_type: 'p2p',
         message_type: 'text',
+        mentions: [
+          {
+            key: '@_user_1',
+            id: { open_id: 'ou_bot' },
+            name: 'AI 工作流助手',
+          },
+        ],
         content: JSON.stringify({
           text: '@AI 工作流助手 /repo alsritter/jinxiaoai-root-project-dir',
         }),
@@ -517,6 +524,72 @@ describe('FeishuAdapter', () => {
     });
 
     expect(received).toEqual(['/repo alsritter/jinxiaoai-root-project-dir']);
+  });
+
+  test('receive event preserves slashes inside normal text after mention', async () => {
+    const adapter = new FeishuAdapter('app-id', 'app-secret');
+    const received: string[] = [];
+
+    adapter.onMessage(async ctx => {
+      received.push(ctx.message);
+    });
+
+    await adapter.start();
+    await registeredHandlers['im.message.receive_v1']?.({
+      sender: { sender_id: { open_id: 'ou_123' }, sender_type: 'user' },
+      message: {
+        message_id: 'om_text_1',
+        chat_id: 'oc_123',
+        chat_type: 'p2p',
+        message_type: 'text',
+        mentions: [
+          {
+            key: '@_user_1',
+            id: { open_id: 'ou_bot' },
+            name: 'AI 工作流助手',
+          },
+        ],
+        content: JSON.stringify({
+          text: '@AI 工作流助手 业务场景（售前/售后）就行了，其它的本来就有这个过滤条件的',
+        }),
+      },
+    });
+
+    expect(received).toEqual([
+      '@AI 工作流助手 业务场景（售前/售后）就行了，其它的本来就有这个过滤条件的',
+    ]);
+  });
+
+  test('receive event preserves standalone slash tokens in normal text after mention', async () => {
+    const adapter = new FeishuAdapter('app-id', 'app-secret');
+    const received: string[] = [];
+
+    adapter.onMessage(async ctx => {
+      received.push(ctx.message);
+    });
+
+    await adapter.start();
+    await registeredHandlers['im.message.receive_v1']?.({
+      sender: { sender_id: { open_id: 'ou_123' }, sender_type: 'user' },
+      message: {
+        message_id: 'om_text_2',
+        chat_id: 'oc_123',
+        chat_type: 'p2p',
+        message_type: 'text',
+        mentions: [
+          {
+            key: '@_user_1',
+            id: { open_id: 'ou_bot' },
+            name: 'AI 工作流助手',
+          },
+        ],
+        content: JSON.stringify({
+          text: '@AI 工作流助手 路径 /tmp/demo 先不用管',
+        }),
+      },
+    });
+
+    expect(received).toEqual(['@AI 工作流助手 路径 /tmp/demo 先不用管']);
   });
 
   test('uses root_id as the stable topic key for group subtopics', async () => {
