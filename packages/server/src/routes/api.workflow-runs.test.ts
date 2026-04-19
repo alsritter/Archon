@@ -201,6 +201,7 @@ import { registerApiRoutes } from './api';
 // ---------------------------------------------------------------------------
 
 const NOW = new Date().toISOString();
+const TWO_HOURS_AGO = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
 
 const MOCK_RUNNING_RUN: MockWorkflowRun = {
   id: 'run-uuid-1',
@@ -807,6 +808,28 @@ describe('GET /api/workflows/runs/:runId', () => {
     expect(body.run.parent_platform_id).toBe('parent-platform-id');
   });
 
+  test('marks a long-idle running run as stale', async () => {
+    mockGetWorkflowRun.mockImplementationOnce(async () => ({
+      ...MOCK_RUNNING_RUN,
+      last_activity_at: TWO_HOURS_AGO,
+    }));
+    mockListWorkflowEvents.mockImplementationOnce(async () => []);
+    mockGetConversationById.mockImplementationOnce(async () => ({
+      id: 'conv-uuid-1',
+      platform_conversation_id: 'web-conv-abc',
+    }));
+
+    const { app } = makeApp();
+    const response = await app.request('/api/workflows/runs/run-uuid-1');
+    expect(response.status).toBe(200);
+
+    const body = (await response.json()) as {
+      run: { is_stale: boolean; stale_reason: string | null };
+    };
+    expect(body.run.is_stale).toBe(true);
+    expect(body.run.stale_reason).toContain('No workflow activity');
+  });
+
   test('returns run with null conversation fields when no conversation_id', async () => {
     mockGetWorkflowRun.mockImplementationOnce(async () => ({
       ...MOCK_RUNNING_RUN,
@@ -850,7 +873,7 @@ describe('GET /api/dashboard/runs', () => {
 
   test('returns paginated runs with total and counts', async () => {
     mockListDashboardRuns.mockImplementationOnce(async () => ({
-      runs: [MOCK_RUNNING_RUN, MOCK_COMPLETED_RUN],
+      runs: [{ ...MOCK_RUNNING_RUN, last_activity_at: TWO_HOURS_AGO }, MOCK_COMPLETED_RUN],
       total: 2,
       counts: { all: 5, running: 1, completed: 2, failed: 1, cancelled: 1, pending: 0 },
     }));
@@ -860,12 +883,13 @@ describe('GET /api/dashboard/runs', () => {
     expect(response.status).toBe(200);
 
     const body = (await response.json()) as {
-      runs: unknown[];
+      runs: Array<{ is_stale?: boolean }>;
       total: number;
       counts: { all: number };
     };
     expect(Array.isArray(body.runs)).toBe(true);
     expect(body.runs.length).toBe(2);
+    expect(body.runs[0]?.is_stale).toBe(true);
     expect(body.total).toBe(2);
     expect(body.counts.all).toBe(5);
   });

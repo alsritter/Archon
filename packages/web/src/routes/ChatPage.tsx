@@ -10,6 +10,7 @@ import { useProject } from '@/contexts/ProjectContext';
 import { listConversations, listWorkflowRuns, addCodebase, getCodebaseInput } from '@/lib/api';
 import type { CodebaseResponse } from '@/lib/api';
 import { cn } from '@/lib/utils';
+import { isStaleWorkflowRun } from '@/lib/workflow-utils';
 
 const PANEL_MIN = 220;
 const PANEL_MAX = 420;
@@ -106,7 +107,7 @@ export function ChatPage(): React.ReactElement {
       // For web runs, parent_conversation_id is the visible conversation in the sidebar.
       // For CLI runs, conversation_id is the only conversation (no parent/worker split).
       const key = run.parent_conversation_id ?? run.conversation_id;
-      if (run.status === 'running') {
+      if (run.status === 'running' && !isStaleWorkflowRun(run)) {
         map.set(key, 'running');
       } else if (run.status === 'failed' && !map.has(key)) {
         map.set(key, 'failed');

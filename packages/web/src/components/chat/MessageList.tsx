@@ -16,6 +16,7 @@ import { getWorkflowRun } from '@/lib/api';
 import { StatusIcon } from '@/components/workflows/StatusIcon';
 import { ArtifactSummary } from '@/components/workflows/ArtifactSummary';
 import { formatDurationMs, ensureUtc } from '@/lib/format';
+import { getWorkflowRunDisplayStatus } from '@/lib/workflow-utils';
 import type { ChatMessage, WorkflowArtifact, ArtifactType } from '@/lib/types';
 
 // Matches artifact paths (forward- and back-slash safe); groups: [1] runId, [2] filename
@@ -130,6 +131,7 @@ function WorkflowResultCard({
 
   // Merge: prefer live state when available
   const status = liveState?.status ?? runData?.run.status ?? 'completed';
+  const displayStatus = liveState ? status : getWorkflowRunDisplayStatus(runData?.run);
   const dagNodes = liveState?.dagNodes ?? [];
   const storeArtifacts = liveState?.artifacts ?? [];
   const startedAt =
@@ -205,7 +207,7 @@ function WorkflowResultCard({
       <div className="rounded-lg border border-border bg-surface overflow-hidden max-w-3xl">
         <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-surface-elevated">
           <span className="shrink-0">
-            <StatusIcon status={fetchFailed ? 'completed' : status} />
+            <StatusIcon status={fetchFailed ? 'completed' : displayStatus} />
           </span>
           <span className="text-xs font-medium text-text-primary truncate flex-1">
             {headerTitle}: {workflowName}

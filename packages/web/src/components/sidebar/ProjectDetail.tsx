@@ -7,6 +7,7 @@ import { ConversationItem } from '@/components/conversations/ConversationItem';
 import { WorkflowInvoker } from '@/components/sidebar/WorkflowInvoker';
 import { formatDuration } from '@/lib/format';
 import { cn } from '@/lib/utils';
+import { getWorkflowRunDisplayStatus, isStaleWorkflowRun } from '@/lib/workflow-utils';
 
 interface ProjectDetailProps {
   codebaseId: string;
@@ -69,7 +70,7 @@ export function ProjectDetail({
       // For web runs, parent_conversation_id is the visible conversation in the sidebar.
       // For CLI runs, conversation_id is the only conversation (no parent/worker split).
       const key = run.parent_conversation_id ?? run.conversation_id;
-      if (run.status === 'running') {
+      if (run.status === 'running' && !isStaleWorkflowRun(run)) {
         map.set(key, 'running');
       } else if (run.status === 'failed' && !map.has(key)) {
         map.set(key, 'failed');
@@ -162,7 +163,7 @@ export function ProjectDetail({
                 className="flex items-center gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-surface-elevated transition-colors w-full text-left"
               >
                 <span className="truncate flex-1 text-text-primary">{run.workflow_name}</span>
-                <RunStatusBadge status={run.status} />
+                <RunStatusBadge status={getWorkflowRunDisplayStatus(run)} />
                 <span className="text-text-tertiary shrink-0">
                   {formatDuration(run.started_at, run.completed_at)}
                 </span>

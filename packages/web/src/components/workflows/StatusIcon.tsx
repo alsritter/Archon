@@ -12,6 +12,8 @@ export function StatusIcon({ status }: { status: string }): React.ReactElement {
       return <Pause className="h-3 w-3 text-warning" />;
     case 'failed':
       return <span className="text-error text-sm">&#x2717;</span>;
+    case 'stale':
+      return <span className="text-error text-sm">&#x26A0;</span>;
     case 'cancelled':
       return <span className="text-text-secondary text-sm">&#x2715;</span>;
     case 'skipped':

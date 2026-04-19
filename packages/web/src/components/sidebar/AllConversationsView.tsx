@@ -5,6 +5,7 @@ import { listConversations, listWorkflowRuns } from '@/lib/api';
 import type { CodebaseResponse } from '@/lib/api';
 import { ConversationItem } from '@/components/conversations/ConversationItem';
 import { useProject } from '@/contexts/ProjectContext';
+import { isStaleWorkflowRun } from '@/lib/workflow-utils';
 
 interface AllConversationsViewProps {
   searchQuery: string;
@@ -35,7 +36,7 @@ export function AllConversationsView({
       // For web runs, parent_conversation_id is the visible conversation in the sidebar.
       // For CLI runs, conversation_id is the only conversation (no parent/worker split).
       const key = run.parent_conversation_id ?? run.conversation_id;
-      if (run.status === 'running') {
+      if (run.status === 'running' && !isStaleWorkflowRun(run)) {
         map.set(key, 'running');
       } else if (run.status === 'failed' && !map.has(key)) {
         map.set(key, 'failed');

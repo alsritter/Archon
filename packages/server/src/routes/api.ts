@@ -79,7 +79,7 @@ function parseRunTimestamp(value: string | Date | null | undefined): number | nu
   return Number.isNaN(parsed) ? null : parsed;
 }
 
-function enrichWorkflowRunStaleness<T extends WorkflowRunWithTimestamps & Record<string, unknown>>(
+function enrichWorkflowRunStaleness<T extends WorkflowRunWithTimestamps>(
   run: T
 ): T & { is_stale: boolean; stale_reason: string | null } {
   const lastActivityAt = parseRunTimestamp(run.last_activity_at);
