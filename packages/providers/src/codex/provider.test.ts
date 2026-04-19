@@ -716,7 +716,10 @@ describe('CodexProvider', () => {
         chunks.push(chunk);
       }
 
-      expect(mockRunStreamed).toHaveBeenCalledWith('test prompt', {});
+      expect(mockRunStreamed).toHaveBeenCalledWith(
+        'test prompt',
+        expect.objectContaining({ signal: expect.any(AbortSignal) })
+      );
     });
 
     test('creates a per-call Codex instance when env is provided', async () => {
@@ -1272,6 +1275,66 @@ describe('sendQuery decomposition behaviors', () => {
     };
 
     await expect(consumeGenerator()).rejects.toThrow('Query aborted');
+  });
+
+  test('abort signal breaks out even when runStreamed hangs before yielding any events', async () => {
+    const abortController = new AbortController();
+
+    mockRunStreamed.mockImplementation(
+      () =>
+        new Promise(() => {
+          // Intentionally never resolve to simulate a hung resume/start before the first event.
+        })
+    );
+
+    const consumeGenerator = async (): Promise<void> => {
+      for await (const _ of client.sendQuery('test', '/workspace', 'stuck-thread', {
+        abortSignal: abortController.signal,
+      })) {
+        // consume
+      }
+    };
+
+    const pending = consumeGenerator();
+    await Promise.resolve();
+    abortController.abort();
+
+    await expect(
+      Promise.race([
+        pending.then(
+          () => 'resolved',
+          (error: unknown) => error
+        ),
+        new Promise(resolve => setTimeout(() => resolve('timed_out'), 50)),
+      ])
+    ).resolves.not.toBe('timed_out');
+
+    await expect(pending).rejects.toThrow('Query aborted');
+  });
+
+  test('preserves first-event timeout when resumed Codex event stream never yields', async () => {
+    mockRunStreamed.mockResolvedValue({
+      events: (async function* () {
+        await new Promise(() => {});
+        yield { type: 'turn.completed', usage: defaultUsage };
+      })(),
+    });
+
+    const consumeGenerator = async (): Promise<void> => {
+      const original = process.env.ARCHON_CODEX_FIRST_EVENT_TIMEOUT_MS;
+      process.env.ARCHON_CODEX_FIRST_EVENT_TIMEOUT_MS = '50';
+      try {
+        for await (const _ of client.sendQuery('test', '/workspace', 'resumed-thread-id')) {
+          // consume
+        }
+      } finally {
+        if (original !== undefined) process.env.ARCHON_CODEX_FIRST_EVENT_TIMEOUT_MS = original;
+        else delete process.env.ARCHON_CODEX_FIRST_EVENT_TIMEOUT_MS;
+      }
+    };
+
+    await expect(consumeGenerator()).rejects.toThrow('produced no output within');
+    await expect(consumeGenerator()).rejects.not.toThrow('Query aborted');
   });
 
   test('enriched error thrown at retry exhaustion, not raw error', async () => {

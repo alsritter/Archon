@@ -17,6 +17,7 @@ import {
   type ExecutionFlowNode,
   type ExecutionNodeData,
 } from './ExecutionDagNode';
+import type { DagEdgeData } from '@/lib/dag-layout';
 
 import '@xyflow/react/dist/style.css';
 
@@ -45,6 +46,7 @@ interface WorkflowDagViewerProps {
   currentlyExecuting?: { nodeName: string; startedAt: number };
   selectedNodeId?: string | null;
   onNodeClick?: (nodeId: string) => void;
+  isMobile?: boolean;
 }
 
 export function WorkflowDagViewer({
@@ -54,11 +56,15 @@ export function WorkflowDagViewer({
   currentlyExecuting,
   selectedNodeId,
   onNodeClick,
+  isMobile = false,
 }: WorkflowDagViewerProps): React.ReactElement {
   // Compute topology layout ONCE from the workflow definition.
   // Only re-layout when the definition changes (node/edge count), not on status updates.
   const { baseNodes, edges: layoutedEdges } = useMemo(() => {
-    const { nodes, edges } = dagNodesToReactFlow(dagNodes, { reduceTransitiveEdges: true });
+    const { nodes, edges } = dagNodesToReactFlow(dagNodes, {
+      reduceTransitiveEdges: true,
+      hideTransitiveEdges: true,
+    });
     return { baseNodes: nodes, edges };
   }, [dagNodes]);
 
@@ -89,16 +95,29 @@ export function WorkflowDagViewer({
           duration: live?.duration,
           error: live?.error,
           selected: node.id === selectedNodeId,
+          current: node.id === currentlyExecuting?.nodeName,
           currentIteration: live?.currentIteration,
           maxIterations: live?.maxIterations,
         },
       } as ExecutionFlowNode;
     });
-  }, [baseNodes, statusMap, dagNodes, selectedNodeId]);
+  }, [baseNodes, statusMap, dagNodes, selectedNodeId, currentlyExecuting?.nodeName]);
 
   // Color edges based on target node status
   const edges: Edge[] = useMemo(() => {
     return layoutedEdges.map(edge => {
+      const edgeData = edge.data as DagEdgeData | undefined;
+      if (edgeData?.isCondition) {
+        return {
+          ...edge,
+          animated: false,
+          type: 'simplebezier' as const,
+          style: { stroke: 'var(--node-prompt)', strokeDasharray: '6 4', strokeWidth: 1.5 },
+          label: 'when',
+          labelStyle: { fill: 'var(--node-prompt)', fontSize: 10, fontWeight: 600 },
+          labelBgStyle: { fill: 'var(--surface)', fillOpacity: 0.9 },
+        };
+      }
       const targetStatus = statusMap.get(edge.target)?.status;
       const stroke = (targetStatus && EDGE_STROKE_BY_STATUS[targetStatus]) ?? DEFAULT_EDGE_STROKE;
       return {
@@ -113,10 +132,12 @@ export function WorkflowDagViewer({
   return (
     <div className="h-full w-full relative">
       {isRunning && currentlyExecuting && (
-        <div className="absolute top-3 right-3 z-10 flex items-center gap-2 rounded-md bg-surface/90 backdrop-blur-sm border border-border px-3 py-1.5 text-xs">
+        <div className="absolute top-3 right-3 z-10 flex max-w-[calc(100%-1.5rem)] items-center gap-2 rounded-md border border-border bg-surface/90 px-3 py-1.5 text-xs backdrop-blur-sm">
           <span className="inline-block w-2 h-2 rounded-full bg-accent-bright animate-pulse" />
           <span className="text-text-secondary">Executing:</span>
-          <span className="font-medium text-text-primary">{currentlyExecuting.nodeName}</span>
+          <span className="truncate font-medium text-text-primary">
+            {currentlyExecuting.nodeName}
+          </span>
           <span className="text-text-tertiary">
             {formatDurationMs(Date.now() - currentlyExecuting.startedAt)}
           </span>
@@ -144,15 +165,21 @@ export function WorkflowDagViewer({
           className="bg-background"
         >
           <Background variant={BackgroundVariant.Dots} gap={16} size={1} color="var(--border)" />
-          <Controls showInteractive={false} className="!bg-surface !border-border" />
-          <MiniMap
-            nodeColor={(node): string => {
-              const data = node.data as ExecutionNodeData;
-              return (data.status && STATUS_MINIMAP_COLORS[data.status]) ?? DEFAULT_MINIMAP_COLOR;
-            }}
-            className="!bg-surface !border-border"
-            maskColor="rgba(0, 0, 0, 0.6)"
-          />
+          {!isMobile && (
+            <>
+              <Controls showInteractive={false} className="!bg-surface !border-border" />
+              <MiniMap
+                nodeColor={(node): string => {
+                  const data = node.data as ExecutionNodeData;
+                  return (
+                    (data.status && STATUS_MINIMAP_COLORS[data.status]) ?? DEFAULT_MINIMAP_COLOR
+                  );
+                }}
+                className="!bg-surface !border-border"
+                maskColor="rgba(0, 0, 0, 0.6)"
+              />
+            </>
+          )}
         </ReactFlow>
       </ReactFlowProvider>
     </div>

@@ -11,6 +11,7 @@ export interface ExecutionNodeData extends DagNodeData {
   duration?: number;
   error?: string;
   selected?: boolean;
+  current?: boolean;
   currentIteration?: number;
   maxIterations?: number;
 }
@@ -28,6 +29,7 @@ const DEFAULT_STYLE = 'border-l-2 border-border bg-surface-elevated';
 const TYPE_COLORS: Record<string, string> = {
   command: 'text-purple-400',
   prompt: 'text-accent-bright',
+  classify: 'text-node-classify',
   bash: 'text-amber-400',
   script: 'text-node-script',
   approval: 'text-node-approval',
@@ -40,16 +42,20 @@ const TYPE_LABELS: Record<string, string> = {
   script: 'SCRIPT',
   approval: 'APPROVAL',
   prompt: 'PROMPT',
+  classify: 'CLASSIFY',
   loop: 'LOOP',
 };
 
 function ExecutionDagNodeRender({ data }: NodeProps<ExecutionFlowNode>): React.ReactElement {
   const style = (data.status && STATUS_STYLES[data.status]) ?? DEFAULT_STYLE;
   const typeLabel = TYPE_LABELS[data.nodeType] ?? 'PROMPT';
+  const displayLabel =
+    data.label ||
+    (data.nodeType === 'command' && typeof data.command === 'string' ? data.command : '');
 
   return (
     <div
-      className={`rounded-lg border border-border px-3 py-2 min-w-[140px] transition-all duration-300 ${style}${data.selected ? ' ring-2 ring-accent-bright' : ''}`}
+      className={`rounded-lg border border-border px-3 py-2 min-w-[140px] transition-all duration-300 ${style}${data.selected ? ' ring-2 ring-accent-bright' : ''}${data.current ? ' ring-2 ring-success shadow-[0_0_14px_var(--success)]' : ''}`}
     >
       <Handle type="target" position={Position.Top} className="!bg-border !w-2 !h-2" />
       <div className="flex items-center gap-2">
@@ -60,8 +66,13 @@ function ExecutionDagNodeRender({ data }: NodeProps<ExecutionFlowNode>): React.R
           {typeLabel}
         </span>
         <span className="text-xs font-medium text-text-primary truncate max-w-[100px]">
-          {data.label}
+          {displayLabel}
         </span>
+        {data.current && (
+          <span className="rounded bg-success/15 px-1.5 py-0.5 text-[9px] font-semibold text-success">
+            LIVE
+          </span>
+        )}
         {data.duration !== undefined && (
           <span className="text-[10px] text-text-tertiary ml-auto shrink-0">
             {formatDurationMs(data.duration)}

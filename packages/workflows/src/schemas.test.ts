@@ -15,6 +15,7 @@ import type {
   DagNode,
   CommandNode,
   PromptNode,
+  ClassifyNode,
   BashNode,
   CancelNode,
   ScriptNode,
@@ -27,6 +28,17 @@ import type {
 
 const commandNode: CommandNode = { id: 'n1', command: 'build' };
 const promptNode: PromptNode = { id: 'n2', prompt: 'Do this inline.' };
+const classifyNode: ClassifyNode = {
+  id: 'n2b',
+  classify: 'Classify the request into one route.',
+  output_format: {
+    type: 'object',
+    properties: {
+      route: { type: 'string' },
+    },
+    required: ['route'],
+  },
+};
 const bashNode: BashNode = { id: 'n3', bash: 'echo hello' };
 const cancelNode: CancelNode = { id: 'n5', cancel: 'Precondition failed' };
 
@@ -61,6 +73,10 @@ describe('isBashNode', () => {
 
   test('returns false for a PromptNode', () => {
     expect(isBashNode(promptNode)).toBe(false);
+  });
+
+  test('returns false for a ClassifyNode', () => {
+    expect(isBashNode(classifyNode)).toBe(false);
   });
 
   test('returns false when bash field is missing', () => {
@@ -189,6 +205,41 @@ describe('TRIGGER_RULES', () => {
     expect(TRIGGER_RULES).toContain('one_success');
     expect(TRIGGER_RULES).toContain('none_failed_min_one_success');
     expect(TRIGGER_RULES).toContain('all_done');
+  });
+});
+
+describe('classify nodes', () => {
+  test('parses a classify node with output_format', () => {
+    const result = dagNodeSchema.safeParse({
+      id: 'router',
+      classify: 'Classify the story',
+      output_format: {
+        type: 'object',
+        properties: {
+          review_path: { type: 'string' },
+        },
+        required: ['review_path'],
+      },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect((result.data as ClassifyNode).classify).toBe('Classify the story');
+    }
+  });
+
+  test('rejects a classify node without output_format', () => {
+    const result = dagNodeSchema.safeParse({
+      id: 'router',
+      classify: 'Classify the story',
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(
+        result.error.issues.some(issue => String(issue.message).includes('output_format'))
+      ).toBe(true);
+    }
   });
 });
 

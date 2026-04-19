@@ -46,6 +46,7 @@ export interface WorkflowMessageMetadata {
     | 'workflow_result'
     | 'workflow_approval';
   segment?: 'new' | 'auto';
+  nodeName?: string;
   workflowDispatch?: { workerConversationId: string; workflowName: string; runId?: string };
   workflowRun?: { workflowName: string; runId: string };
   workflowResult?: { workflowName: string; runId: string };

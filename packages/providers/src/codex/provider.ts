@@ -128,6 +128,73 @@ const AUTH_PATTERNS = [
 ];
 const SUBPROCESS_CRASH_PATTERNS = ['exited with code', 'killed', 'signal', 'codex exec'];
 
+function getFirstEventTimeoutMs(): number {
+  const raw = process.env.ARCHON_CODEX_FIRST_EVENT_TIMEOUT_MS;
+  if (raw) {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return 60_000;
+}
+
+function buildFirstEventHangDiagnostics(
+  cwd: string,
+  model: string | undefined,
+  resumeSessionId: string | undefined,
+  attempt: number
+): Record<string, unknown> {
+  return {
+    cwd,
+    model,
+    resumeSessionId,
+    attempt,
+    platform: process.platform,
+    uid: typeof process.getuid === 'function' ? process.getuid() : undefined,
+    isTTY: process.stdout.isTTY ?? false,
+  };
+}
+
+class FirstEventTimeoutError extends Error {}
+
+async function* withFirstMessageTimeout<T>(
+  gen: AsyncGenerator<T>,
+  controller: AbortController,
+  timeoutMs: number,
+  diagnostics: Record<string, unknown>
+): AsyncGenerator<T> {
+  let timerId: ReturnType<typeof setTimeout> | undefined;
+  let firstValue: IteratorResult<T>;
+  try {
+    firstValue = await Promise.race([
+      gen.next(),
+      new Promise<never>((_, reject) => {
+        timerId = setTimeout(() => {
+          reject(new FirstEventTimeoutError());
+        }, timeoutMs);
+      }),
+    ]);
+  } catch (err) {
+    if (err instanceof FirstEventTimeoutError) {
+      controller.abort();
+      getLog().error({ ...diagnostics, timeoutMs }, 'codex.first_event_timeout');
+      throw new Error(
+        'Codex subprocess produced no output within ' +
+          timeoutMs +
+          'ms. See logs for codex.first_event_timeout diagnostic dump.'
+      );
+    }
+    throw err;
+  } finally {
+    if (timerId) clearTimeout(timerId);
+  }
+
+  if (firstValue.done) return;
+  yield firstValue.value;
+  for await (const value of gen) {
+    yield value;
+  }
+}
+
 function classifyCodexError(
   errorMessage: string
 ): 'rate_limit' | 'auth' | 'crash' | 'model_access' | 'unknown' {
@@ -431,8 +498,20 @@ async function* streamCodexEvents(
  */
 function classifyAndEnrichCodexError(
   error: Error,
-  model?: string
+  model: string | undefined,
+  controller: AbortController
 ): { enrichedError: Error; errorClass: string; shouldRetry: boolean } {
+  if (controller.signal.aborted) {
+    if (error.message.includes('produced no output within')) {
+      return { enrichedError: error, errorClass: 'timeout', shouldRetry: false };
+    }
+    return {
+      enrichedError: new Error('Query aborted'),
+      errorClass: 'aborted',
+      shouldRetry: false,
+    };
+  }
+
   const errorClass = classifyCodexError(error.message);
 
   if (errorClass === 'model_access') {
@@ -560,62 +639,91 @@ export class CodexProvider implements IAgentProvider {
     // 3. Build turn options
     const { turnOptions, hasOutputFormat } = buildTurnOptions(requestOptions);
     let lastError: Error | undefined;
+    let currentController: AbortController | undefined;
+    const onAbort = (): void => {
+      currentController?.abort();
+    };
+    if (requestOptions?.abortSignal) {
+      requestOptions.abortSignal.addEventListener('abort', onAbort, { once: true });
+    }
 
-    for (let attempt = 0; attempt <= MAX_SUBPROCESS_RETRIES; attempt++) {
-      if (requestOptions?.abortSignal?.aborted) {
-        throw new Error('Query aborted');
-      }
-
-      if (attempt > 0) {
-        getLog().debug({ cwd, attempt }, 'starting_new_thread');
-        try {
-          thread = codex.startThread(threadOptions);
-        } catch (startError) {
-          const err = startError as Error;
-          if (isModelAccessError(err.message)) {
-            throw new Error(buildModelAccessMessage(requestOptions?.model));
-          }
-          throw new Error(`Codex query failed: ${err.message}`);
-        }
-      }
-
-      try {
-        // 4. Run streamed turn
-        const result = await thread.runStreamed(prompt, turnOptions);
-
-        // 5. Stream normalized events (fresh state per attempt to avoid dedup leaks)
-        yield* streamCodexEvents(
-          result.events as AsyncIterable<Record<string, unknown>>,
-          hasOutputFormat,
-          thread.id,
-          requestOptions?.abortSignal
-        );
-        return;
-      } catch (error) {
-        const err = error as Error;
-
+    try {
+      for (let attempt = 0; attempt <= MAX_SUBPROCESS_RETRIES; attempt++) {
         if (requestOptions?.abortSignal?.aborted) {
           throw new Error('Query aborted');
         }
 
-        const { enrichedError, errorClass, shouldRetry } = classifyAndEnrichCodexError(
-          err,
-          requestOptions?.model
-        );
+        const controller = new AbortController();
+        currentController = controller;
+        turnOptions.signal = controller.signal;
 
-        getLog().error(
-          { err, errorClass, attempt, maxRetries: MAX_SUBPROCESS_RETRIES },
-          'query_error'
-        );
-
-        if (!shouldRetry || attempt >= MAX_SUBPROCESS_RETRIES) {
-          throw enrichedError;
+        if (attempt > 0) {
+          getLog().debug({ cwd, attempt }, 'starting_new_thread');
+          try {
+            thread = codex.startThread(threadOptions);
+          } catch (startError) {
+            const err = startError as Error;
+            if (isModelAccessError(err.message)) {
+              throw new Error(buildModelAccessMessage(requestOptions?.model));
+            }
+            throw new Error(`Codex query failed: ${err.message}`);
+          }
         }
 
-        const delayMs = this.retryBaseDelayMs * Math.pow(2, attempt);
-        getLog().info({ attempt, delayMs, errorClass }, 'retrying_query');
-        await new Promise(resolve => setTimeout(resolve, delayMs));
-        lastError = enrichedError;
+        try {
+          // 4. Run streamed turn
+          const result = await thread.runStreamed(prompt, turnOptions);
+          const timeoutMs = getFirstEventTimeoutMs();
+          const diagnostics = buildFirstEventHangDiagnostics(
+            cwd,
+            requestOptions?.model,
+            resumeSessionId,
+            attempt
+          );
+
+          // 5. Stream normalized events (fresh state per attempt to avoid dedup leaks)
+          const normalizedEvents = streamCodexEvents(
+            result.events as AsyncIterable<Record<string, unknown>>,
+            hasOutputFormat,
+            thread.id,
+            controller.signal
+          );
+          yield* withFirstMessageTimeout(normalizedEvents, controller, timeoutMs, diagnostics);
+          return;
+        } catch (error) {
+          const err = error as Error;
+
+          if (
+            requestOptions?.abortSignal?.aborted &&
+            !err.message.includes('produced no output within')
+          ) {
+            throw new Error('Query aborted');
+          }
+
+          const { enrichedError, errorClass, shouldRetry } = classifyAndEnrichCodexError(
+            err,
+            requestOptions?.model,
+            controller
+          );
+
+          getLog().error(
+            { err, errorClass, attempt, maxRetries: MAX_SUBPROCESS_RETRIES },
+            'query_error'
+          );
+
+          if (!shouldRetry || attempt >= MAX_SUBPROCESS_RETRIES) {
+            throw enrichedError;
+          }
+
+          const delayMs = this.retryBaseDelayMs * Math.pow(2, attempt);
+          getLog().info({ attempt, delayMs, errorClass }, 'retrying_query');
+          await new Promise(resolve => setTimeout(resolve, delayMs));
+          lastError = enrichedError;
+        }
+      }
+    } finally {
+      if (requestOptions?.abortSignal) {
+        requestOptions.abortSignal.removeEventListener('abort', onAbort);
       }
     }
 

@@ -83,8 +83,12 @@ async function safeSendMessage(
   unknownErrorTracker?: UnknownErrorTracker,
   metadata?: WorkflowMessageMetadata
 ): Promise<boolean> {
+  const enrichedMetadata =
+    context?.stepName && !metadata?.nodeName
+      ? { ...metadata, nodeName: context.stepName }
+      : metadata;
   try {
-    await platform.sendMessage(conversationId, message, metadata);
+    await platform.sendMessage(conversationId, message, enrichedMetadata);
     if (unknownErrorTracker) unknownErrorTracker.count = 0;
     return true;
   } catch (error) {
@@ -134,9 +138,13 @@ async function sendCriticalMessage(
   maxRetries = 3,
   metadata?: WorkflowMessageMetadata
 ): Promise<boolean> {
+  const enrichedMetadata =
+    context?.stepName && !metadata?.nodeName
+      ? { ...metadata, nodeName: context.stepName }
+      : metadata;
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      await platform.sendMessage(conversationId, message, metadata);
+      await platform.sendMessage(conversationId, message, enrichedMetadata);
       return true;
     } catch (error) {
       const err = error as Error;

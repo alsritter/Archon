@@ -107,6 +107,7 @@ export interface LoopIterationEvent extends BaseSSEEvent {
   status: 'running' | 'completed' | 'failed';
   iteration: number;
   duration?: number;
+  resolvedPrompt?: string;
 }
 
 // DAG node status (emitted during DAG workflow execution)
@@ -119,6 +120,7 @@ export interface DagNodeEvent extends BaseSSEEvent {
   duration?: number;
   error?: string;
   reason?: 'when_condition' | 'trigger_rule';
+  resolvedPrompt?: string;
 }
 
 // Workflow tool activity (tool_started / tool_completed from executor)
@@ -247,6 +249,7 @@ export interface DagNodeState {
   duration?: number;
   error?: string;
   reason?: 'when_condition' | 'trigger_rule';
+  resolvedPrompt?: string;
   currentIteration?: number;
   maxIterations?: number;
   iterations?: LoopIterationInfo[];

@@ -51,6 +51,7 @@ interface LoopIterationStartedEvent {
   nodeId?: string; // present when loop runs as a DAG node
   iteration: number;
   maxIterations: number;
+  resolvedPrompt?: string;
 }
 
 interface LoopIterationCompletedEvent {
@@ -60,6 +61,7 @@ interface LoopIterationCompletedEvent {
   iteration: number;
   duration: number;
   completionDetected: boolean;
+  resolvedPrompt?: string;
 }
 
 interface LoopIterationFailedEvent {
@@ -84,6 +86,7 @@ interface NodeStartedEvent {
   runId: string;
   nodeId: string;
   nodeName: string; // command name or node.id for inline prompts
+  resolvedPrompt?: string;
 }
 
 interface NodeCompletedEvent {
@@ -95,6 +98,7 @@ interface NodeCompletedEvent {
   costUsd?: number;
   stopReason?: string;
   numTurns?: number;
+  resolvedPrompt?: string;
 }
 
 interface NodeFailedEvent {

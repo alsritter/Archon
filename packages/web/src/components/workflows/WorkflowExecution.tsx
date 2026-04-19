@@ -8,13 +8,28 @@ import { StepLogs } from './StepLogs';
 import { WorkflowLogs } from './WorkflowLogs';
 import { WorkflowDagViewer } from './WorkflowDagViewer';
 import { ArtifactSummary } from './ArtifactSummary';
+import { WorkflowNodeDetails } from './WorkflowNodeDetails';
+import { getWorkflowExecutionLayout } from './workflow-execution-layout';
 import { ChatInterface } from '@/components/chat/ChatInterface';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable';
 import { useWorkflowStore } from '@/stores/workflow-store';
-import { getWorkflowRun, getWorkflowRunByWorker, getCodebase, getWorkflow } from '@/lib/api';
+import {
+  getWorkflowRun,
+  getWorkflowRunByWorker,
+  getCodebase,
+  getWorkflow,
+  updateConversation,
+} from '@/lib/api';
 import { ensureUtc, formatDurationMs } from '@/lib/format';
 import { selectInitialNode } from '@/lib/select-initial-node';
+import { cn } from '@/lib/utils';
+import { getWorkflowRunDisplayStatus, isActiveWorkflowRun } from '@/lib/workflow-utils';
+import {
+  buildWorkflowConversationTitle,
+  findWorkflowNode,
+  getWorkflowStageInfo,
+} from '@/lib/workflow-node-details';
 import type {
   WorkflowState,
   ArtifactType,
@@ -49,6 +64,8 @@ interface WorkflowRunQueryData {
   parentPlatformId: string | null;
   conversationPlatformId: string | null;
   codebaseId: string | null;
+  isStale: boolean;
+  staleReason: string | null;
   events: WorkflowEventResponse[];
 }
 
@@ -56,10 +73,48 @@ interface WorkflowExecutionProps {
   runId: string;
 }
 
+export function mergeWorkflowExecutionState(
+  initialData: WorkflowState | null,
+  liveWorkflow: WorkflowState | undefined,
+  runId: string
+): WorkflowState | null {
+  if (!liveWorkflow) return initialData;
+  if (!initialData) return liveWorkflow;
+  if (isTerminal(initialData.status) && initialData.status !== liveWorkflow.status) {
+    console.warn('[WorkflowExecution] REST overrides conflicting live status', {
+      runId,
+      restStatus: initialData.status,
+      liveStatus: liveWorkflow.status,
+    });
+    return initialData;
+  }
+  if (isTerminal(initialData.status) && !isTerminal(liveWorkflow.status)) {
+    console.warn('[WorkflowExecution] REST overrides stale SSE status', {
+      runId,
+      restStatus: initialData.status,
+      sseStatus: liveWorkflow.status,
+    });
+    return initialData;
+  }
+  return {
+    ...initialData,
+    status: liveWorkflow.status,
+    completedAt: liveWorkflow.completedAt ?? initialData.completedAt,
+    error: liveWorkflow.error ?? initialData.error,
+    // SSE accumulates dagNodes/artifacts incrementally — prefer them when populated,
+    // otherwise fall back to the REST snapshot.
+    dagNodes: liveWorkflow.dagNodes.length > 0 ? liveWorkflow.dagNodes : initialData.dagNodes,
+    artifacts: liveWorkflow.artifacts.length > 0 ? liveWorkflow.artifacts : initialData.artifacts,
+    currentIteration: liveWorkflow.currentIteration ?? initialData.currentIteration,
+    maxIterations: liveWorkflow.maxIterations ?? initialData.maxIterations,
+  };
+}
+
 function StatusBadge({ status }: { status: string }): React.ReactElement {
   const colors: Record<string, string> = {
     pending: 'bg-accent/20 text-accent',
     running: 'bg-accent/20 text-accent',
+    stale: 'bg-error/20 text-error',
     completed: 'bg-success/20 text-success',
     failed: 'bg-error/20 text-error',
     cancelled: 'bg-surface text-text-secondary',
@@ -82,6 +137,12 @@ export function WorkflowExecution({ runId }: WorkflowExecutionProps): React.Reac
   const [codebaseCwd, setCodebaseCwd] = useState<string | null>(null);
   const [workerRunId, setWorkerRunId] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<'graph' | 'logs' | 'chat'>('graph');
+  const [isMobile, setIsMobile] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.matchMedia('(max-width: 767px)').matches;
+  });
+  const [isMobileGraphDetailsOpen, setIsMobileGraphDetailsOpen] = useState(false);
+  const [hasManuallySelectedNode, setHasManuallySelectedNode] = useState(false);
   // Increments on every user-initiated node click to trigger scroll in WorkflowLogs
   const [nodeScrollTrigger, setNodeScrollTrigger] = useState(0);
   // Track which codebaseId we've already fetched to avoid stale re-fetches during runId transitions
@@ -94,9 +155,28 @@ export function WorkflowExecution({ runId }: WorkflowExecutionProps): React.Reac
     setCodebaseCwd(null);
     setWorkerRunId(null);
     setActiveView('graph');
+    setIsMobileGraphDetailsOpen(false);
+    setHasManuallySelectedNode(false);
     setNodeScrollTrigger(0);
     fetchedCodebaseIdRef.current = null;
   }, [runId]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const mediaQuery = window.matchMedia('(max-width: 767px)');
+    const handleChange = (event: MediaQueryListEvent): void => {
+      setIsMobile(event.matches);
+      if (!event.matches) {
+        setIsMobileGraphDetailsOpen(false);
+      }
+    };
+
+    setIsMobile(mediaQuery.matches);
+    mediaQuery.addEventListener('change', handleChange);
+    return (): void => {
+      mediaQuery.removeEventListener('change', handleChange);
+    };
+  }, []);
 
   // Fetch workflow run data with polling while running
   const { data: queryData, error: queryError } = useQuery({
@@ -122,6 +202,8 @@ export function WorkflowExecution({ runId }: WorkflowExecutionProps): React.Reac
                       ? 'failed'
                       : 'skipped';
               const existing = nodeMap.get(nodeId);
+              const resolvedPrompt =
+                typeof e.data.resolved_prompt === 'string' ? e.data.resolved_prompt : undefined;
               // Keep the latest non-running status (completed/failed/skipped override running)
               if (!existing || status !== 'running') {
                 nodeMap.set(nodeId, {
@@ -131,6 +213,12 @@ export function WorkflowExecution({ runId }: WorkflowExecutionProps): React.Reac
                   duration: e.data.duration_ms as number | undefined,
                   error: e.data.error as string | undefined,
                   reason: e.data.reason as 'when_condition' | 'trigger_rule' | undefined,
+                  resolvedPrompt: resolvedPrompt ?? existing?.resolvedPrompt,
+                });
+              } else if (resolvedPrompt) {
+                nodeMap.set(nodeId, {
+                  ...existing,
+                  resolvedPrompt,
                 });
               }
             }
@@ -157,6 +245,8 @@ export function WorkflowExecution({ runId }: WorkflowExecutionProps): React.Reac
 
               const existingIters: LoopIterationInfo[] = existing.iterations ?? [];
               const iterIdx = existingIters.findIndex(it => it.iteration === iteration);
+              const resolvedPrompt =
+                typeof e.data.resolved_prompt === 'string' ? e.data.resolved_prompt : undefined;
               const iterState: LoopIterationInfo = {
                 iteration,
                 status: iterStatus,
@@ -174,6 +264,7 @@ export function WorkflowExecution({ runId }: WorkflowExecutionProps): React.Reac
                 currentIteration: iteration,
                 maxIterations: maxIter ?? existing.maxIterations,
                 iterations: newIters,
+                resolvedPrompt: resolvedPrompt ?? existing.resolvedPrompt,
               });
             }
 
@@ -200,6 +291,8 @@ export function WorkflowExecution({ runId }: WorkflowExecutionProps): React.Reac
         parentPlatformId: data.run.parent_platform_id ?? null,
         conversationPlatformId: data.run.conversation_platform_id ?? null,
         codebaseId: data.run.codebase_id ?? null,
+        isStale: data.run.is_stale === true,
+        staleReason: data.run.stale_reason ?? null,
         events: data.events,
       };
     },
@@ -325,41 +418,21 @@ export function WorkflowExecution({ runId }: WorkflowExecutionProps): React.Reac
   // When a `running` SSE event is missed (no buffering), the first SSE event
   // seen is `completed` — which creates liveWorkflow with steps:[] and
   // startedAt=completionTime. We must preserve initialData's structure in that case.
-  const workflow = ((): WorkflowState | null => {
-    if (!liveWorkflow) return initialData;
-    if (!initialData) return liveWorkflow;
-    if (isTerminal(initialData.status) && !isTerminal(liveWorkflow.status)) {
-      console.warn('[WorkflowExecution] REST overrides stale SSE status', {
-        runId,
-        restStatus: initialData.status,
-        sseStatus: liveWorkflow.status,
-      });
-      return initialData;
-    }
-    // Merge: use liveWorkflow's dynamic status but preserve initialData's
-    // structural data when liveWorkflow is sparse (missed earlier events).
-    return {
-      ...initialData,
-      status: liveWorkflow.status,
-      completedAt: liveWorkflow.completedAt ?? initialData.completedAt,
-      error: liveWorkflow.error ?? initialData.error,
-      // SSE accumulates dagNodes/artifacts incrementally — prefer them when populated,
-      // otherwise fall back to the REST snapshot.
-      dagNodes: liveWorkflow.dagNodes.length > 0 ? liveWorkflow.dagNodes : initialData.dagNodes,
-      artifacts: liveWorkflow.artifacts.length > 0 ? liveWorkflow.artifacts : initialData.artifacts,
-
-      currentIteration: liveWorkflow.currentIteration ?? initialData.currentIteration,
-      maxIterations: liveWorkflow.maxIterations ?? initialData.maxIterations,
-    };
-  })();
+  const workflow = mergeWorkflowExecutionState(initialData, liveWorkflow, runId);
+  const selectedNodeDefinition = findWorkflowNode(dagDefinitionNodes, selectedDagNode);
+  const selectedNodeLiveState =
+    selectedDagNode !== null
+      ? (workflow?.dagNodes.find(node => node.nodeId === selectedDagNode) ?? null)
+      : null;
+  const syncedTitlesRef = useRef<Map<string, string>>(new Map());
 
   // Auto-select the first DAG node when workflow data loads and no node is selected.
   // Prefer the currently executing node (for running workflows), otherwise pick the first node.
   useEffect(() => {
-    if (selectedDagNode !== null) return;
+    if (selectedDagNode !== null || hasManuallySelectedNode) return;
     const nodeId = selectInitialNode(workflow?.dagNodes);
     if (nodeId) setSelectedDagNode(nodeId);
-  }, [selectedDagNode, workflow?.dagNodes]);
+  }, [selectedDagNode, workflow?.dagNodes, hasManuallySelectedNode]);
 
   // Force re-render every second while workflow is running (for live timer)
   const [, setTick] = useState(0);
@@ -411,6 +484,44 @@ export function WorkflowExecution({ runId }: WorkflowExecutionProps): React.Reac
 
     return null;
   }, [queryData?.events, workflow?.status]);
+
+  useEffect(() => {
+    if (!currentlyExecuting || hasManuallySelectedNode) return;
+    setSelectedDagNode(currentlyExecuting.nodeName);
+  }, [currentlyExecuting, hasManuallySelectedNode]);
+
+  const stageInfo = workflow ? getWorkflowStageInfo(workflow, currentlyExecuting) : null;
+  const stageTitle = workflow
+    ? buildWorkflowConversationTitle(workflow.workflowName, workflow.status, stageInfo)
+    : null;
+
+  useEffect(() => {
+    if (!stageTitle || !workflow) return;
+    if (
+      workflow.status !== 'running' &&
+      workflow.status !== 'paused' &&
+      workflow.status !== 'failed'
+    ) {
+      return;
+    }
+
+    const targets = [workerPlatformId, parentPlatformId].filter(
+      (value, index, all): value is string => !!value && all.indexOf(value) === index
+    );
+
+    for (const conversationId of targets) {
+      if (syncedTitlesRef.current.get(conversationId) === stageTitle) continue;
+      syncedTitlesRef.current.set(conversationId, stageTitle);
+      void updateConversation(conversationId, { title: stageTitle }).catch((err: unknown) => {
+        syncedTitlesRef.current.delete(conversationId);
+        console.warn('[WorkflowExecution] Failed to sync workflow stage title', {
+          conversationId,
+          title: stageTitle,
+          error: err instanceof Error ? err.message : err,
+        });
+      });
+    }
+  }, [stageTitle, workflow, workerPlatformId, parentPlatformId]);
 
   // Compute formatted log lines for the selected DAG node from DB events.
   const stepLogLines = useMemo((): string[] => {
@@ -479,10 +590,17 @@ export function WorkflowExecution({ runId }: WorkflowExecutionProps): React.Reac
 
   // Handler for user-initiated node clicks (graph or sidebar).
   // Increments scroll trigger so WorkflowLogs scrolls to the node's section.
-  const handleNodeClick = useCallback((nodeId: string): void => {
-    setSelectedDagNode(nodeId);
-    setNodeScrollTrigger(prev => prev + 1);
-  }, []);
+  const handleNodeClick = useCallback(
+    (nodeId: string): void => {
+      setHasManuallySelectedNode(true);
+      setSelectedDagNode(nodeId);
+      setNodeScrollTrigger(prev => prev + 1);
+      if (isMobile) {
+        setIsMobileGraphDetailsOpen(true);
+      }
+    },
+    [isMobile]
+  );
 
   if (error) {
     return (
@@ -511,7 +629,18 @@ export function WorkflowExecution({ runId }: WorkflowExecutionProps): React.Reac
       : (workflow.completedAt ?? (startedAt ? Date.now() : 0));
   const elapsed = startedAt ? Math.max(0, completedAt - startedAt) : 0;
 
-  const isRunning = workflow.status === 'running' || workflow.status === 'pending';
+  const displayStatus = liveWorkflow
+    ? workflow.status
+    : getWorkflowRunDisplayStatus({
+        status: workflow.status,
+        is_stale: queryData?.isStale,
+      });
+  const isRunning = liveWorkflow
+    ? workflow.status === 'running' || workflow.status === 'pending'
+    : isActiveWorkflowRun({
+        status: workflow.status,
+        is_stale: queryData?.isStale,
+      });
 
   // Pick the platform ID for logs: worker takes precedence over conversation.
   const logsPlatformId = workerPlatformId ?? conversationPlatformId;
@@ -519,6 +648,7 @@ export function WorkflowExecution({ runId }: WorkflowExecutionProps): React.Reac
   // Logs panel — detect whether the selected node has any DB events so we can show an empty-state
   const logsPanel = (
     <div className="flex-1 flex flex-col overflow-hidden min-h-0 h-full">
+      <WorkflowNodeDetails node={selectedNodeDefinition} liveState={selectedNodeLiveState} />
       <div className="flex-1 flex flex-col overflow-hidden min-h-0">
         {logsPlatformId && !selectedStepHasEvents && !isRunning ? (
           <div className="flex-1 flex items-center justify-center text-text-secondary text-sm">
@@ -548,7 +678,9 @@ export function WorkflowExecution({ runId }: WorkflowExecutionProps): React.Reac
   );
 
   const renderBody = (): React.ReactElement => {
-    if (isDag && activeView === 'graph') {
+    const layout = getWorkflowExecutionLayout({ activeView, isMobile });
+
+    if (isDag && activeView === 'graph' && layout.mode === 'split') {
       return (
         <ResizablePanelGroup orientation="horizontal" className="flex-1 min-h-0">
           <ResizablePanel defaultSize={60} minSize={30}>
@@ -560,6 +692,7 @@ export function WorkflowExecution({ runId }: WorkflowExecutionProps): React.Reac
                 currentlyExecuting={currentlyExecuting ?? undefined}
                 selectedNodeId={selectedDagNode}
                 onNodeClick={handleNodeClick}
+                isMobile={isMobile}
               />
             ) : (
               <div className="flex items-center justify-center h-full text-text-secondary">
@@ -575,6 +708,48 @@ export function WorkflowExecution({ runId }: WorkflowExecutionProps): React.Reac
         </ResizablePanelGroup>
       );
     }
+    if (isDag && activeView === 'graph') {
+      return (
+        <div className="flex flex-1 flex-col overflow-hidden min-h-0">
+          <div
+            className={cn(
+              'min-h-[260px] border-b border-border',
+              isMobileGraphDetailsOpen ? 'flex-[0_0_45%]' : 'flex-1'
+            )}
+          >
+            {dagDefinitionNodes ? (
+              <WorkflowDagViewer
+                dagNodes={dagDefinitionNodes}
+                liveStatus={workflow.dagNodes}
+                isRunning={isRunning}
+                currentlyExecuting={currentlyExecuting ?? undefined}
+                selectedNodeId={selectedDagNode}
+                onNodeClick={handleNodeClick}
+                isMobile={isMobile}
+              />
+            ) : (
+              <div className="flex items-center justify-center h-full text-text-secondary">
+                <span className="inline-block h-5 w-5 animate-spin rounded-full border-2 border-accent border-t-transparent mr-2" />
+                Loading graph...
+              </div>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={(): void => {
+              setIsMobileGraphDetailsOpen(open => !open);
+            }}
+            className="flex items-center justify-between border-b border-border bg-surface px-4 py-2 text-sm text-text-secondary"
+          >
+            <span>{isMobileGraphDetailsOpen ? 'Hide step details' : 'Show step details'}</span>
+            <span className="text-xs text-text-tertiary">
+              {isMobileGraphDetailsOpen ? '\u25B2' : '\u25BC'}
+            </span>
+          </button>
+          {isMobileGraphDetailsOpen && <div className="min-h-0 flex-1">{logsPanel}</div>}
+        </div>
+      );
+    }
     if (isDag && activeView === 'chat' && parentPlatformId) {
       return (
         <div className="flex flex-col flex-1 overflow-hidden min-h-0">
@@ -583,6 +758,20 @@ export function WorkflowExecution({ runId }: WorkflowExecutionProps): React.Reac
       );
     }
     // Logs view: DAG "Logs" tab
+    if (layout.mode === 'stacked' && layout.showNodeList) {
+      return (
+        <div className="flex flex-1 flex-col overflow-hidden min-h-0">
+          <div className="max-h-56 border-b border-border overflow-auto bg-surface">
+            <DagNodeProgress
+              nodes={workflow.dagNodes}
+              activeNodeId={selectedDagNode}
+              onNodeClick={handleNodeClick}
+            />
+          </div>
+          {logsPanel}
+        </div>
+      );
+    }
     return (
       <div className="flex flex-1 overflow-hidden min-h-0">
         <div className="w-64 border-r border-border overflow-auto">
@@ -600,7 +789,7 @@ export function WorkflowExecution({ runId }: WorkflowExecutionProps): React.Reac
   return (
     <div className="flex flex-col h-full min-h-0 overflow-hidden">
       {/* Header */}
-      <div className="flex items-center gap-3 px-4 py-3 border-b border-border">
+      <div className="flex flex-wrap items-center gap-2 px-4 py-3 border-b border-border sm:gap-3">
         <button
           onClick={(): void => {
             if (window.history.length > 1) {
@@ -614,11 +803,18 @@ export function WorkflowExecution({ runId }: WorkflowExecutionProps): React.Reac
         >
           &larr;
         </button>
-        <div className="flex items-center gap-2 min-w-0">
-          <h2 className="font-semibold text-text-primary truncate">{workflow.workflowName}</h2>
-          <StatusBadge status={workflow.status} />
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <div className="min-w-0">
+            <h2 className="font-semibold text-text-primary truncate">{workflow.workflowName}</h2>
+            {stageInfo?.label && (
+              <p className="truncate text-xs text-text-secondary">
+                Current stage: {stageInfo.label}
+              </p>
+            )}
+          </div>
+          <StatusBadge status={displayStatus} />
         </div>
-        <div className="flex items-center gap-2 ml-auto shrink-0">
+        <div className="flex w-full flex-wrap items-center gap-2 text-xs sm:ml-auto sm:w-auto sm:shrink-0">
           {codebaseName && <span className="text-xs text-text-secondary">{codebaseName}</span>}
           {workerRunId && (
             <button
@@ -635,16 +831,22 @@ export function WorkflowExecution({ runId }: WorkflowExecutionProps): React.Reac
         </div>
       </div>
 
+      {!liveWorkflow && queryData?.isStale && queryData.staleReason && (
+        <div className="border-b border-error/20 bg-error/5 px-4 py-2 text-xs text-error">
+          {queryData.staleReason}
+        </div>
+      )}
+
       {/* View tabs — only for DAG workflows */}
       {isDag && (
-        <div className="flex items-center px-4 py-1.5 border-b border-border">
+        <div className="flex items-center overflow-x-auto px-4 py-1.5 border-b border-border">
           <Tabs
             value={activeView}
             onValueChange={(v): void => {
               setActiveView(v as typeof activeView);
             }}
           >
-            <TabsList>
+            <TabsList className="min-w-max">
               <TabsTrigger value="graph">Graph</TabsTrigger>
               <TabsTrigger value="logs">Logs</TabsTrigger>
               {parentPlatformId && (

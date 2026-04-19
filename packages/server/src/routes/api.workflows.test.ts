@@ -5,6 +5,7 @@ import type { WebAdapter } from '../adapters/web';
 import { mkdir, rm, writeFile } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { randomUUID } from 'crypto';
 import { validationErrorHook } from './openapi-defaults';
 import { makeTestWorkflow, makeTestWorkflowWithSource } from '@archon/workflows/test-utils';
 
@@ -251,6 +252,61 @@ describe('GET /api/workflows/:name', () => {
     } finally {
       await rm(testDir, { recursive: true, force: true });
     }
+  });
+
+  test('includes command preview on command nodes when matching project command exists', async () => {
+    const app = createTestApp();
+    registerApiRoutes(app, {} as WebAdapter, {} as ConversationLockManager);
+
+    const root = join(tmpdir(), `archon-workflow-command-preview-${randomUUID()}`);
+    const workflowsDir = join(root, '.archon', 'workflows');
+    const commandsDir = join(root, '.archon', 'commands');
+    await mkdir(workflowsDir, { recursive: true });
+    await mkdir(commandsDir, { recursive: true });
+    await writeFile(
+      join(workflowsDir, 'story-brainstorm-design.yaml'),
+      [
+        'name: story-brainstorm-design',
+        'description: test',
+        'nodes:',
+        '  - id: draft',
+        '    command: story-draft-design',
+      ].join('\n'),
+      'utf8'
+    );
+    await writeFile(
+      join(commandsDir, 'story-draft-design.md'),
+      [
+        '---',
+        'description: Turn an approved brainstorming design snapshot into a structured design draft for one story',
+        '---',
+        '',
+        '# Title',
+      ].join('\n'),
+      'utf8'
+    );
+    mockParseWorkflow.mockReturnValueOnce({
+      workflow: {
+        name: 'story-brainstorm-design',
+        description: 'test',
+        nodes: [{ id: 'draft', command: 'story-draft-design' }],
+      },
+      error: null,
+    });
+    mockListCodebases.mockImplementationOnce(async () => [{ default_cwd: root }]);
+
+    const response = await app.request(
+      `/api/workflows/story-brainstorm-design?cwd=${encodeURIComponent(root)}`
+    );
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      workflow: { nodes: Array<Record<string, unknown>> };
+    };
+    expect(body.workflow.nodes[0]?.command_preview).toBe(
+      'description: Turn an approved brainstorming design snapshot into a structured design draft for one story'
+    );
+
+    await rm(root, { recursive: true, force: true });
   });
 
   test('returns WorkflowDefinition shape with expected top-level fields', async () => {
@@ -559,5 +615,32 @@ describe('GET /api/commands', () => {
     const archonAssist = body.commands.find(c => c.name === 'archon-assist');
     expect(archonAssist).toBeDefined();
     expect(archonAssist?.source).toBe('bundled');
+  });
+
+  test('returns a preview extracted from project command markdown', async () => {
+    const app = createTestApp();
+    registerApiRoutes(app, {} as WebAdapter, {} as ConversationLockManager);
+
+    const projectRoot = join(tmpdir(), `archon-command-preview-${randomUUID()}`);
+    await mkdir(projectRoot, { recursive: true });
+    await mkdir(join(projectRoot, '.archon', 'commands'), { recursive: true });
+    await writeFile(
+      join(projectRoot, '.archon', 'commands', 'story-draft-plan.md'),
+      ['# Story Draft Plan', '', '根据已确认方案输出执行计划草稿。', '', '更多内容...'].join('\n'),
+      'utf8'
+    );
+
+    mockListCodebases.mockImplementationOnce(async () => [{ default_cwd: projectRoot }]);
+
+    const response = await app.request(`/api/commands?cwd=${encodeURIComponent(projectRoot)}`);
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      commands: Array<{ name: string; source: string; preview?: string }>;
+    };
+    const entry = body.commands.find(command => command.name === 'story-draft-plan');
+    expect(entry?.source).toBe('project');
+    expect(entry?.preview).toBe('根据已确认方案输出执行计划草稿。');
+
+    await rm(projectRoot, { recursive: true, force: true });
   });
 });

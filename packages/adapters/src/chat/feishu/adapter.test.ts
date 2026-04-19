@@ -158,7 +158,7 @@ describe('FeishuAdapter', () => {
       'https://open.feishu.cn/open-apis/im/v1/messages/om_123/reactions'
     );
     expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({
-      reaction_type: { emoji_type: 'EYES' },
+      reaction_type: { emoji_type: 'OnIt' },
     });
   });
 
@@ -218,6 +218,29 @@ describe('FeishuAdapter', () => {
     expect(card.elements?.[0]?.text?.content).toContain('Starting workflow');
   });
 
+  test('sendMessage renders workflow status messages with workflow name in the card title', async () => {
+    const fetchMock = globalThis.fetch as ReturnType<typeof mock>;
+    const adapter = new FeishuAdapter('app-id', 'app-secret');
+
+    await adapter.sendMessage('chat:oc_123', '🚀 **Starting workflow**: `story-review`', {
+      category: 'workflow_status',
+      workflowRun: {
+        workflowName: 'story-review',
+        runId: 'run_status_1',
+      },
+    });
+
+    const body = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body)) as {
+      msg_type: string;
+      content: string;
+    };
+    expect(body.msg_type).toBe('interactive');
+    const card = JSON.parse(body.content) as {
+      header?: { title?: { content?: string } };
+    };
+    expect(card.header?.title?.content).toBe('Workflow · story-review');
+  });
+
   test('sendMessage hides approve and reject buttons for selection-style approval prompts', async () => {
     const fetchMock = globalThis.fetch as ReturnType<typeof mock>;
     const adapter = new FeishuAdapter('app-id', 'app-secret');
@@ -253,6 +276,49 @@ describe('FeishuAdapter', () => {
       )
     ) as { elements?: Array<{ content?: string }> } | undefined;
     expect(noteBlock?.elements?.[0]?.content ?? '').toContain('直接在当前会话回复内容继续。');
+  });
+
+  test('sendMessage renders approval cards with the node name as title when available', async () => {
+    const fetchMock = globalThis.fetch as ReturnType<typeof mock>;
+    const adapter = new FeishuAdapter('app-id', 'app-secret');
+
+    await adapter.sendMessage(
+      'chat:oc_123',
+      '⏸ **Approval required**: 请确认是否继续。\n\nRun ID: `run_789`\nApprove: `/workflow approve run_789` | Reject: `/workflow reject run_789`',
+      {
+        category: 'workflow_approval',
+        nodeName: 'story-review',
+      }
+    );
+
+    const body = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body)) as {
+      msg_type: string;
+      content: string;
+    };
+    expect(body.msg_type).toBe('interactive');
+    const card = JSON.parse(body.content) as {
+      header?: { title?: { content?: string } };
+    };
+    expect(card.header?.title?.content).toBe('story-review');
+  });
+
+  test('sendMessage uses the node name for rich text assistant cards when available', async () => {
+    const fetchMock = globalThis.fetch as ReturnType<typeof mock>;
+    const adapter = new FeishuAdapter('app-id', 'app-secret');
+
+    await adapter.sendMessage('chat:oc_123', '**Review summary**\n\n- item 1\n- item 2', {
+      nodeName: 'solution-review',
+    });
+
+    const body = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body)) as {
+      msg_type: string;
+      content: string;
+    };
+    expect(body.msg_type).toBe('interactive');
+    const card = JSON.parse(body.content) as {
+      header?: { title?: { content?: string } };
+    };
+    expect(card.header?.title?.content).toBe('solution-review');
   });
 
   test('sendMessage falls back to text when card rendering request fails', async () => {

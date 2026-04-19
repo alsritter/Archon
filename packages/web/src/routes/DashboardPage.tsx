@@ -8,7 +8,7 @@ import {
   resumeWorkflowRun,
   abandonWorkflowRun,
   deleteWorkflowRun,
-  approveWorkflowRun,
+  approveAndResumeWorkflowRun,
   rejectWorkflowRun,
   listCodebases,
   getHealth,
@@ -17,6 +17,7 @@ import {
 } from '@/lib/api';
 import type { WorkflowRunStatus } from '@/lib/types';
 import { ensureUtc } from '@/lib/format';
+import { isActiveWorkflowRun } from '@/lib/workflow-utils';
 import { StatusSummaryBar } from '@/components/dashboard/StatusSummaryBar';
 import { WorkflowRunGroup } from '@/components/dashboard/WorkflowRunGroup';
 import { WorkflowRunCard } from '@/components/dashboard/WorkflowRunCard';
@@ -191,7 +192,7 @@ export function DashboardPage(): React.ReactElement {
   // Only sets initial state if the run isn't already tracked by SSE.
   useEffect(() => {
     for (const run of runs) {
-      if (run.status === 'running' || run.status === 'pending' || run.status === 'paused') {
+      if (isActiveWorkflowRun(run)) {
         hydrateWorkflow({
           runId: run.id,
           workflowName: run.workflow_name,
@@ -219,11 +220,7 @@ export function DashboardPage(): React.ReactElement {
   });
 
   // Split into active and history (from server-filtered results)
-  const activeRuns = useMemo(
-    () =>
-      runs.filter(r => r.status === 'running' || r.status === 'pending' || r.status === 'paused'),
-    [runs]
-  );
+  const activeRuns = useMemo(() => runs.filter(run => isActiveWorkflowRun(run)), [runs]);
 
   /**
    * Group active runs by parent_platform_id.
@@ -292,7 +289,7 @@ export function DashboardPage(): React.ReactElement {
   const handleDelete = (runId: string): Promise<void> =>
     runAction(deleteWorkflowRun, runId, 'Failed to delete workflow run');
   const handleApprove = (runId: string): Promise<void> =>
-    runAction(approveWorkflowRun, runId, 'Failed to approve workflow');
+    runAction(approveAndResumeWorkflowRun, runId, 'Failed to approve workflow');
   const handleReject = (runId: string): Promise<void> =>
     runAction(rejectWorkflowRun, runId, 'Failed to reject workflow');
 
@@ -301,9 +298,9 @@ export function DashboardPage(): React.ReactElement {
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
-      <div className="flex-1 overflow-auto p-6 space-y-6">
+      <div className="flex-1 overflow-auto p-4 sm:p-6 space-y-5 sm:space-y-6">
         {/* Header */}
-        <div className="flex items-center justify-between">
+        <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
           <h1 className="text-lg font-semibold text-text-primary">Mission Control</h1>
           {dataUpdatedAt > 0 && (
             <span className="text-xs text-text-tertiary">
@@ -402,8 +399,8 @@ export function DashboardPage(): React.ReactElement {
             )}
 
             {/* Pagination */}
-            <div className="flex items-center justify-between pt-2">
-              <div className="flex items-center gap-3">
+            <div className="flex flex-col gap-3 pt-2 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
                 <span className="text-xs text-text-tertiary">
                   Showing {String(page * pageSize + 1)}&ndash;
                   {String(Math.min((page + 1) * pageSize, total))} of {String(total)} runs
@@ -413,7 +410,7 @@ export function DashboardPage(): React.ReactElement {
                   onChange={(e): void => {
                     setPageSize(Number(e.target.value));
                   }}
-                  className="rounded-md border border-border bg-surface-elevated px-2 py-1 text-xs text-text-primary focus:border-primary focus:outline-none"
+                  className="w-full rounded-md border border-border bg-surface-elevated px-2 py-2 text-xs text-text-primary focus:border-primary focus:outline-none sm:w-auto sm:py-1"
                 >
                   {PAGE_SIZE_OPTIONS.map(size => (
                     <option key={size} value={size}>
@@ -422,17 +419,17 @@ export function DashboardPage(): React.ReactElement {
                   ))}
                 </select>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 sm:flex sm:justify-end">
                 <button
                   onClick={(): void => {
                     setPage(page - 1);
                   }}
                   disabled={page === 0}
-                  className="rounded-md border border-border bg-surface-elevated px-3 py-1 text-xs text-text-secondary transition-colors hover:bg-surface disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="min-h-9 rounded-md border border-border bg-surface-elevated px-3 py-2 text-xs text-text-secondary transition-colors hover:bg-surface disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   Previous
                 </button>
-                <span className="text-xs text-text-tertiary">
+                <span className="text-center text-xs text-text-tertiary">
                   Page {String(page + 1)} of {String(Math.max(1, totalPages))}
                 </span>
                 <button
@@ -440,7 +437,7 @@ export function DashboardPage(): React.ReactElement {
                     setPage(page + 1);
                   }}
                   disabled={!hasMore}
-                  className="rounded-md border border-border bg-surface-elevated px-3 py-1 text-xs text-text-secondary transition-colors hover:bg-surface disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="min-h-9 rounded-md border border-border bg-surface-elevated px-3 py-2 text-xs text-text-secondary transition-colors hover:bg-surface disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   Next
                 </button>

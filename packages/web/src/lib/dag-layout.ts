@@ -6,6 +6,11 @@ import type { DagFlowNode } from '@/components/workflows/DagNodeComponent';
 export const NODE_WIDTH = 180;
 export const NODE_HEIGHT = 80;
 
+export interface DagEdgeData extends Record<string, unknown> {
+  isDependency?: boolean;
+  isCondition?: boolean;
+}
+
 export function layoutWithDagre(
   nodes: DagFlowNode[],
   edges: Edge[]
@@ -45,7 +50,8 @@ export function layoutWithDagre(
 
 export function resolveNodeDisplay(dn: DagNode): {
   label: string;
-  nodeType: 'command' | 'prompt' | 'bash' | 'script' | 'approval' | 'loop';
+  nodeType: 'command' | 'prompt' | 'classify' | 'bash' | 'script' | 'approval' | 'loop';
+  commandPreview?: string;
   promptText?: string;
   bashScript?: string;
   bashTimeout?: number;
@@ -81,7 +87,21 @@ export function resolveNodeDisplay(dn: DagNode): {
     };
   }
   if ('command' in dn && dn.command) {
-    return { label: dn.command, nodeType: 'command' };
+    return {
+      label: dn.command,
+      nodeType: 'command',
+      commandPreview:
+        typeof (dn as DagNode & { command_preview?: unknown }).command_preview === 'string'
+          ? (dn as DagNode & { command_preview: string }).command_preview
+          : undefined,
+    };
+  }
+  if ('classify' in dn && dn.classify) {
+    return {
+      label: 'Classifier',
+      nodeType: 'classify',
+      promptText: dn.classify,
+    };
   }
   return {
     label: 'Prompt',
@@ -117,17 +137,45 @@ function hasAlternatePath(
 function reduceTransitiveEdges(edges: Edge[]): Edge[] {
   const adjacency = new Map<string, string[]>();
   for (const edge of edges) {
+    const data = edge.data as DagEdgeData | undefined;
+    if (data?.isCondition && !data?.isDependency) continue;
     const neighbors = adjacency.get(edge.source) ?? [];
     neighbors.push(edge.target);
     adjacency.set(edge.source, neighbors);
   }
 
-  return edges.filter(edge => !hasAlternatePath(adjacency, edge.source, edge.target, edge.id));
+  return edges.filter(edge => {
+    const data = edge.data as DagEdgeData | undefined;
+    if (data?.isCondition && !data?.isDependency) return true;
+    return !hasAlternatePath(adjacency, edge.source, edge.target, edge.id);
+  });
+}
+
+export function hideTransitiveEdges(edges: Edge[]): Edge[] {
+  const visibleIds = new Set(reduceTransitiveEdges(edges).map(edge => edge.id));
+  return edges.map(edge => ({
+    ...edge,
+    hidden: !visibleIds.has(edge.id),
+  }));
+}
+
+function extractWhenRefs(expr: string | undefined): string[] {
+  if (!expr) return [];
+
+  const refs = new Set<string>();
+  const pattern = /\$([a-zA-Z_][a-zA-Z0-9_-]*)\.(?:output|payload)(?:\.[a-zA-Z_][a-zA-Z0-9_]*)?/g;
+
+  for (const match of expr.matchAll(pattern)) {
+    const nodeId = match[1];
+    if (nodeId) refs.add(nodeId);
+  }
+
+  return [...refs];
 }
 
 export function dagNodesToReactFlow(
   dagNodes: readonly DagNode[],
-  options?: { reduceTransitiveEdges?: boolean }
+  options?: { reduceTransitiveEdges?: boolean; hideTransitiveEdges?: boolean }
 ): {
   nodes: DagFlowNode[];
   edges: Edge[];
@@ -143,21 +191,50 @@ export function dagNodesToReactFlow(
   }));
 
   const edges: Edge[] = [];
+  const edgeMap = new Map<string, Edge>();
+
+  const upsertEdge = (source: string, target: string, flags: DagEdgeData, idPrefix = ''): void => {
+    const id = idPrefix ? `${idPrefix}:${source}->${target}` : `${source}->${target}`;
+    const existing = edgeMap.get(id);
+    if (existing) {
+      existing.data = {
+        ...(existing.data as DagEdgeData | undefined),
+        ...flags,
+      };
+      return;
+    }
+
+    const edge: Edge = {
+      id,
+      source,
+      target,
+      type: 'smoothstep',
+      data: flags,
+    };
+    edgeMap.set(id, edge);
+    edges.push(edge);
+  };
+
   for (const dn of dagNodes) {
     for (const dep of dn.depends_on ?? []) {
-      edges.push({
-        id: `${dep}->${dn.id}`,
-        source: dep,
-        target: dn.id,
-        type: 'smoothstep',
-      });
+      upsertEdge(dep, dn.id, { isDependency: true });
+    }
+
+    for (const ref of extractWhenRefs(dn.when)) {
+      const dependencyEdgeId = `${ref}->${dn.id}`;
+      if (edgeMap.has(dependencyEdgeId)) {
+        upsertEdge(ref, dn.id, { isCondition: true });
+        continue;
+      }
+      upsertEdge(ref, dn.id, { isCondition: true }, 'when');
     }
   }
 
-  const displayEdges = options?.reduceTransitiveEdges ? reduceTransitiveEdges(edges) : edges;
+  const layoutEdges = options?.reduceTransitiveEdges ? reduceTransitiveEdges(edges) : edges;
+  const displayEdges = options?.hideTransitiveEdges ? hideTransitiveEdges(edges) : edges;
 
-  const { nodes: layouted, edges: layoutedEdges } = layoutWithDagre(nodes, displayEdges);
-  return { nodes: layouted, edges: layoutedEdges };
+  const { nodes: layouted } = layoutWithDagre(nodes, layoutEdges);
+  return { nodes: layouted, edges: displayEdges };
 }
 
 /**

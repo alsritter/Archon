@@ -60,6 +60,37 @@ function getLog(): ReturnType<typeof createLogger> {
   if (!cachedLog) cachedLog = createLogger('api');
   return cachedLog;
 }
+
+const STALE_WORKFLOW_ACTIVITY_MS = 30 * 60 * 1000;
+const STALE_WORKFLOW_REASON = 'No workflow activity recorded for over 30 minutes.';
+
+interface WorkflowRunWithTimestamps {
+  status: string;
+  last_activity_at: string | null;
+}
+
+function parseRunTimestamp(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const normalized = value.endsWith('Z') ? value : `${value}Z`;
+  const parsed = Date.parse(normalized);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function enrichWorkflowRunStaleness<T extends WorkflowRunWithTimestamps & Record<string, unknown>>(
+  run: T
+): T & { is_stale: boolean; stale_reason: string | null } {
+  const lastActivityAt = parseRunTimestamp(run.last_activity_at);
+  const isStale =
+    run.status === 'running' &&
+    lastActivityAt !== null &&
+    Date.now() - lastActivityAt > STALE_WORKFLOW_ACTIVITY_MS;
+
+  return {
+    ...run,
+    is_stale: isStale,
+    stale_reason: isStale ? STALE_WORKFLOW_REASON : null,
+  };
+}
 import * as conversationDb from '@archon/core/db/conversations';
 import * as codebaseDb from '@archon/core/db/codebases';
 import * as envVarDb from '@archon/core/db/env-vars';
@@ -121,6 +152,86 @@ import {
 } from './schemas/config.schemas';
 import { providerListResponseSchema } from './schemas/provider.schemas';
 import { getProviderInfoList, isRegisteredProvider } from '@archon/providers';
+
+function buildCommandPreview(content: string): string | undefined {
+  const lines = content
+    .split('\n')
+    .map(line => line.trim())
+    .filter(line => line.length > 0)
+    .filter(line => !line.startsWith('#'))
+    .filter(line => !line.startsWith('```'))
+    .filter(line => !line.startsWith('---'));
+
+  const preview = lines[0];
+  return preview ? preview.slice(0, 160) : undefined;
+}
+
+async function getCommandPreviewForWorkflow(
+  commandName: string,
+  workingDir: string | undefined
+): Promise<string | undefined> {
+  if (workingDir) {
+    for (const folder of getCommandFolderSearchPaths()) {
+      const filePath = join(workingDir, folder, `${commandName}.md`);
+      try {
+        const content = await readFile(filePath, 'utf8');
+        return buildCommandPreview(content);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+          getLog().error({ err, filePath, commandName }, 'workflow.command_preview_project_failed');
+        }
+      }
+    }
+  }
+
+  if (Object.hasOwn(BUNDLED_COMMANDS, commandName)) {
+    return buildCommandPreview(BUNDLED_COMMANDS[commandName]);
+  }
+
+  if (!isBinaryBuild()) {
+    try {
+      const filePath = join(getDefaultCommandsPath(), `${commandName}.md`);
+      const content = await readFile(filePath, 'utf8');
+      return buildCommandPreview(content);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        getLog().error({ err, commandName }, 'workflow.command_preview_default_failed');
+      }
+    }
+  }
+
+  return undefined;
+}
+
+async function enrichWorkflowCommandNodes<T extends { nodes?: unknown[] }>(
+  workflow: T,
+  workingDir: string | undefined
+): Promise<T> {
+  if (!Array.isArray(workflow.nodes)) return workflow;
+
+  const nodes = await Promise.all(
+    workflow.nodes.map(async node => {
+      if (!node || typeof node !== 'object') return node;
+      const commandName =
+        'command' in node && typeof (node as { command?: unknown }).command === 'string'
+          ? (node as { command: string }).command
+          : undefined;
+      if (!commandName) return node;
+
+      const preview = await getCommandPreviewForWorkflow(commandName, workingDir);
+      if (!preview) return node;
+      return {
+        ...node,
+        command_preview: preview,
+      };
+    })
+  );
+
+  return {
+    ...workflow,
+    nodes,
+  };
+}
 
 // Read app version: use build-time constant in binary, package.json in dev
 let appVersion = 'unknown';
@@ -1372,6 +1483,12 @@ export function registerApiRoutes(
   // GET /api/stream/__dashboard__ — multiplexed dashboard SSE (all workflow events)
   // IMPORTANT: Must be registered before /api/stream/:conversationId to avoid param capture.
   app.get('/api/stream/__dashboard__', async c => {
+    const webOrigin = process.env.WEB_UI_ORIGIN || '*';
+    c.header('Access-Control-Allow-Origin', webOrigin);
+    c.header('Access-Control-Allow-Headers', 'Content-Type');
+    c.header('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    c.header('Cache-Control', 'no-cache');
+    c.header('X-Accel-Buffering', 'no');
     return streamSSE(c, async stream => {
       await stream.writeSSE({
         data: JSON.stringify({ type: 'heartbeat', timestamp: Date.now() }),
@@ -1409,6 +1526,12 @@ export function registerApiRoutes(
   // GET /api/stream/:conversationId - SSE streaming
   app.get('/api/stream/:conversationId', async c => {
     const conversationId = c.req.param('conversationId');
+    const webOrigin = process.env.WEB_UI_ORIGIN || '*';
+    c.header('Access-Control-Allow-Origin', webOrigin);
+    c.header('Access-Control-Allow-Headers', 'Content-Type');
+    c.header('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    c.header('Cache-Control', 'no-cache');
+    c.header('X-Accel-Buffering', 'no');
 
     return streamSSE(c, async stream => {
       // Send initial heartbeat immediately to flush HTTP headers.
@@ -1778,7 +1901,10 @@ export function registerApiRoutes(
         limit,
         offset,
       });
-      return c.json(result);
+      return c.json({
+        ...result,
+        runs: result.runs.map(run => enrichWorkflowRunStaleness(run)),
+      });
     } catch (error) {
       getLog().error({ err: error }, 'list_dashboard_runs_failed');
       return apiError(c, 500, 'Failed to list dashboard runs');
@@ -2005,7 +2131,7 @@ export function registerApiRoutes(
         limit,
         codebaseId,
       });
-      return c.json({ runs });
+      return c.json({ runs: runs.map(run => enrichWorkflowRunStaleness(run)) });
     } catch (error) {
       getLog().error({ err: error }, 'list_workflow_runs_failed');
       return apiError(c, 500, 'Failed to list workflow runs');
@@ -2021,7 +2147,7 @@ export function registerApiRoutes(
       if (!run) {
         return apiError(c, 404, 'No workflow run found for this worker');
       }
-      return c.json({ run });
+      return c.json({ run: enrichWorkflowRunStaleness(run) });
     } catch (error) {
       getLog().error({ err: error }, 'workflow_run_by_worker_lookup_failed');
       return apiError(c, 500, 'Failed to look up workflow run');
@@ -2063,7 +2189,7 @@ export function registerApiRoutes(
 
       return c.json({
         run: {
-          ...run,
+          ...enrichWorkflowRunStaleness(run),
           worker_platform_id: workerPlatformId,
           parent_platform_id: parentPlatformId,
           conversation_platform_id: conversationPlatformId ?? null,
@@ -2135,8 +2261,9 @@ export function registerApiRoutes(
           if (result.error) {
             return apiError(c, 500, `Workflow file is invalid: ${result.error.error}`);
           }
+          const workflow = await enrichWorkflowCommandNodes(result.workflow, workingDir);
           return c.json({
-            workflow: result.workflow,
+            workflow,
             filename,
             source: 'project' as WorkflowSource,
           });
@@ -2155,7 +2282,8 @@ export function registerApiRoutes(
         if (result.error) {
           return apiError(c, 500, `Bundled workflow is invalid: ${result.error.error}`);
         }
-        return c.json({ workflow: result.workflow, filename, source: 'bundled' as WorkflowSource });
+        const workflow = await enrichWorkflowCommandNodes(result.workflow, workingDir);
+        return c.json({ workflow, filename, source: 'bundled' as WorkflowSource });
       }
 
       if (!isBinaryBuild()) {
@@ -2166,8 +2294,9 @@ export function registerApiRoutes(
           if (result.error) {
             return apiError(c, 500, `Default workflow is invalid: ${result.error.error}`);
           }
+          const workflow = await enrichWorkflowCommandNodes(result.workflow, workingDir);
           return c.json({
-            workflow: result.workflow,
+            workflow,
             filename,
             source: 'bundled' as WorkflowSource,
           });
@@ -2299,11 +2428,11 @@ export function registerApiRoutes(
       }
 
       // Collect commands: project-defined override bundled (same name wins)
-      const commandMap = new Map<string, WorkflowSource>();
+      const commandMap = new Map<string, { source: WorkflowSource; preview?: string }>();
 
       // 1. Seed with bundled defaults
-      for (const name of Object.keys(BUNDLED_COMMANDS)) {
-        commandMap.set(name, 'bundled');
+      for (const [name, content] of Object.entries(BUNDLED_COMMANDS)) {
+        commandMap.set(name, { source: 'bundled', preview: buildCommandPreview(content) });
       }
 
       // 2. If not binary build, also check filesystem defaults
@@ -2311,8 +2440,12 @@ export function registerApiRoutes(
         try {
           const defaultsPath = getDefaultCommandsPath();
           const files = await findMarkdownFilesRecursive(defaultsPath);
-          for (const { commandName } of files) {
-            commandMap.set(commandName, 'bundled');
+          for (const { commandName, relativePath } of files) {
+            const content = await readFile(join(defaultsPath, relativePath), 'utf8');
+            commandMap.set(commandName, {
+              source: 'bundled',
+              preview: buildCommandPreview(content),
+            });
           }
         } catch (err) {
           if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
@@ -2329,8 +2462,12 @@ export function registerApiRoutes(
           const dirPath = join(workingDir, folder);
           try {
             const files = await findMarkdownFilesRecursive(dirPath);
-            for (const { commandName } of files) {
-              commandMap.set(commandName, 'project');
+            for (const { commandName, relativePath } of files) {
+              const content = await readFile(join(dirPath, relativePath), 'utf8');
+              commandMap.set(commandName, {
+                source: 'project',
+                preview: buildCommandPreview(content),
+              });
             }
           } catch (err) {
             if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
@@ -2341,7 +2478,11 @@ export function registerApiRoutes(
         }
       }
 
-      const commands = Array.from(commandMap.entries()).map(([name, source]) => ({ name, source }));
+      const commands = Array.from(commandMap.entries()).map(([name, entry]) => ({
+        name,
+        source: entry.source,
+        preview: entry.preview,
+      }));
       return c.json({ commands });
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));

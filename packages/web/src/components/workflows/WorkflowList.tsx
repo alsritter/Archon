@@ -132,7 +132,7 @@ export function WorkflowList(): React.ReactElement {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex-1 overflow-auto space-y-4 p-0">
+      <div className="flex-1 overflow-visible space-y-4 p-0 md:overflow-auto">
         {/* Search + Category Filters — only show when workflows exist */}
         {hasWorkflows && (
           <div className="space-y-3">
@@ -182,7 +182,7 @@ export function WorkflowList(): React.ReactElement {
             No workflows match your search.
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {filteredWorkflows.map(wf => (
               <WorkflowCard
                 key={wf.name}
@@ -207,7 +207,7 @@ export function WorkflowList(): React.ReactElement {
       {/* Sticky run bar — anchored at bottom, slides up with glow when workflow selected */}
       {selectedWorkflow && (
         <div className="shrink-0 border-t border-accent/40 bg-surface-elevated px-4 py-3 animate-slide-up shadow-[0_-4px_20px_rgba(59,130,246,0.15)]">
-          <div className="flex items-center gap-3">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center">
             {/* Workflow name + dismiss */}
             <div className="flex items-center gap-2 shrink-0">
               <span className="text-sm font-medium text-text-primary">{displayName}</span>
@@ -230,7 +230,7 @@ export function WorkflowList(): React.ReactElement {
               onChange={(e): void => {
                 setLocalProjectId(e.target.value || null);
               }}
-              className="w-48 shrink-0 rounded-md border border-border bg-surface px-2 py-1.5 text-xs text-text-primary focus:outline-none focus:ring-1 focus:ring-accent"
+              className="w-full shrink-0 rounded-md border border-border bg-surface px-2 py-2 text-xs text-text-primary focus:outline-none focus:ring-1 focus:ring-accent md:w-48 md:py-1.5"
             >
               <option value="">No project</option>
               {codebases?.map(cb => (
@@ -241,32 +241,35 @@ export function WorkflowList(): React.ReactElement {
             </select>
 
             {/* Message input + Run button */}
-            <input
-              ref={messageInputRef}
-              type="text"
-              value={runMessage}
-              onChange={(e): void => {
-                setRunMessage(e.target.value);
-              }}
-              placeholder="Enter a message for this workflow..."
-              className="flex-1 min-w-0 px-3 py-1.5 rounded-md border border-border bg-surface text-sm text-text-primary placeholder:text-text-secondary focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-50"
-              onKeyDown={(e): void => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault();
+            <div className="flex w-full flex-col gap-2 md:min-w-0 md:flex-1 md:flex-row md:items-center">
+              <input
+                ref={messageInputRef}
+                type="text"
+                value={runMessage}
+                onChange={(e): void => {
+                  setRunMessage(e.target.value);
+                }}
+                placeholder="Enter a message for this workflow..."
+                className="min-w-0 flex-1 rounded-md border border-border bg-surface px-3 py-2 text-sm text-text-primary placeholder:text-text-secondary focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-50 md:py-1.5"
+                onKeyDown={(e): void => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    void handleRun(selectedWorkflow);
+                  }
+                }}
+                disabled={running}
+              />
+              <Button
+                size="sm"
+                className="w-full md:w-auto"
+                onClick={(): void => {
                   void handleRun(selectedWorkflow);
-                }
-              }}
-              disabled={running}
-            />
-            <Button
-              size="sm"
-              onClick={(): void => {
-                void handleRun(selectedWorkflow);
-              }}
-              disabled={running || !runMessage.trim()}
-            >
-              {running ? 'Starting...' : 'Run'}
-            </Button>
+                }}
+                disabled={running || !runMessage.trim()}
+              >
+                {running ? 'Starting...' : 'Run'}
+              </Button>
+            </div>
           </div>
           {runError && <p className="text-xs text-error mt-1">{runError}</p>}
         </div>

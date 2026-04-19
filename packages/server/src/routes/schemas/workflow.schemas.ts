@@ -72,6 +72,7 @@ export const commandEntrySchema = z
   .object({
     name: z.string(),
     source: workflowSourceSchema,
+    preview: z.string().optional(),
   })
   .openapi('CommandEntry');
 
@@ -104,6 +105,8 @@ export const workflowRunSchema = z
     completed_at: z.string().nullable(),
     last_activity_at: z.string().nullable(),
     working_path: z.string().nullable(),
+    is_stale: z.boolean().optional(),
+    stale_reason: z.string().nullable().optional(),
   })
   .openapi('WorkflowRun');
 

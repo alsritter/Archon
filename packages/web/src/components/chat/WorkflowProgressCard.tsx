@@ -3,11 +3,22 @@ import { useNavigate } from 'react-router';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { CheckCircle, ChevronRight, Loader2, Pause, XCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { approveWorkflowRun, getWorkflowRunByWorker, rejectWorkflowRun } from '@/lib/api';
+import {
+  approveAndResumeWorkflowRun,
+  getWorkflowRunByWorker,
+  rejectWorkflowRun,
+  updateConversation,
+} from '@/lib/api';
 import { useWorkflowStore } from '@/stores/workflow-store';
 import { StatusIcon } from '@/components/workflows/StatusIcon';
 import { formatDurationMs } from '@/lib/format';
-import { isTerminalStatus } from '@/lib/workflow-utils';
+import {
+  getWorkflowRunDisplayStatus,
+  isActiveWorkflowRun,
+  isTerminalStatus,
+  isStaleWorkflowRun,
+} from '@/lib/workflow-utils';
+import { buildWorkflowConversationTitle, getWorkflowStageInfo } from '@/lib/workflow-node-details';
 import type { DagNodeState } from '@/lib/types';
 
 interface WorkflowProgressCardProps {
@@ -30,14 +41,20 @@ export function WorkflowProgressCard({
     queryKey: ['workflowRunByWorker', workerConversationId],
     queryFn: () => getWorkflowRunByWorker(workerConversationId),
     refetchInterval: (query): number | false => {
-      const status = query.state.data?.run?.status;
-      if (status === 'completed' || status === 'failed' || status === 'cancelled') return false;
+      const run = query.state.data?.run;
+      if (!run) return 3000;
+      if (isStaleWorkflowRun(run)) return false;
+      if (run.status === 'completed' || run.status === 'failed' || run.status === 'cancelled') {
+        return false;
+      }
       return 3000;
     },
   });
 
   const runId = runData?.run?.id;
   const restStatus = runData?.run?.status;
+  const displayStatus = getWorkflowRunDisplayStatus(runData?.run);
+  const staleReason = runData?.run?.stale_reason ?? null;
 
   // Live SSE state from Zustand store
   const liveState = useWorkflowStore(state => (runId ? state.workflows.get(runId) : undefined));
@@ -52,12 +69,31 @@ export function WorkflowProgressCard({
 
   const completedCount = dagNodes.filter(n => n.status === 'completed').length;
   const totalNodes = dagNodes.length;
-  const isRunning = status === 'running' || status === 'pending';
+  const isRunning = liveState
+    ? status === 'running' || status === 'pending'
+    : isActiveWorkflowRun(runData?.run);
   const isPaused = status === 'paused';
+  const stageInfo =
+    status && liveState
+      ? getWorkflowStageInfo(
+          {
+            workflowName: liveState.workflowName,
+            status,
+            dagNodes,
+            approval: liveState.approval,
+          },
+          null
+        )
+      : null;
+  const stageTitle =
+    status && liveState
+      ? buildWorkflowConversationTitle(liveState.workflowName, status, stageInfo)
+      : null;
 
   // Expand/collapse state
   const [expanded, setExpanded] = useState(false);
   const userToggled = useRef(false);
+  const syncedTitleRef = useRef<string | null>(null);
 
   // Auto-expand when running or paused, auto-collapse when terminal (unless user toggled)
   useEffect(() => {
@@ -82,9 +118,24 @@ export function WorkflowProgressCard({
     };
   }, [isRunning, startedAt]);
 
+  useEffect(() => {
+    if (!stageTitle || !status) return;
+    if (status !== 'running' && status !== 'paused' && status !== 'failed') return;
+    if (syncedTitleRef.current === stageTitle) return;
+    syncedTitleRef.current = stageTitle;
+    void updateConversation(workerConversationId, { title: stageTitle }).catch((err: unknown) => {
+      syncedTitleRef.current = null;
+      console.warn('[WorkflowProgressCard] Failed to sync stage title', {
+        workerConversationId,
+        title: stageTitle,
+        error: err instanceof Error ? err.message : err,
+      });
+    });
+  }, [stageTitle, status, workerConversationId]);
+
   // Approve/reject mutations
   const approveMutation = useMutation({
-    mutationFn: () => approveWorkflowRun(runId ?? ''),
+    mutationFn: () => approveAndResumeWorkflowRun(runId ?? ''),
   });
   const rejectMutation = useMutation({
     mutationFn: () => rejectWorkflowRun(runId ?? ''),
@@ -157,9 +208,12 @@ export function WorkflowProgressCard({
           )}
         />
         <span className="shrink-0">
-          <StatusIcon status={status ?? 'pending'} />
+          <StatusIcon status={liveState ? (status ?? 'pending') : displayStatus} />
         </span>
         <span className="truncate text-xs font-medium text-text-primary">{workflowName}</span>
+        {stageInfo?.label && (
+          <span className="truncate text-[10px] text-text-tertiary">{stageInfo.label}</span>
+        )}
         {totalNodes > 0 && (
           <span className="shrink-0 text-[10px] text-text-secondary">
             {String(completedCount)}/{String(totalNodes)} nodes
@@ -177,6 +231,12 @@ export function WorkflowProgressCard({
           ) : null}
         </span>
       </button>
+
+      {!liveState && displayStatus === 'stale' && staleReason && (
+        <div className="border-t border-border bg-error/5 px-3 py-2 text-[11px] text-error">
+          {staleReason}
+        </div>
+      )}
 
       {/* Expanded body */}
       {expanded && (

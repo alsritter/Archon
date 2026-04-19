@@ -38,6 +38,7 @@ import {
   substituteNodeOutputRefs,
   executeDagWorkflow,
 } from './dag-executor';
+import type { SendQueryOptions } from '@archon/providers/types';
 import { loadMcpConfig } from '@archon/providers/claude/provider';
 import type { DagNode, BashNode, ScriptNode, NodeOutput, WorkflowRun } from './schemas';
 import { discoverWorkflows } from './workflow-discovery';
@@ -1357,7 +1358,8 @@ describe('executeDagWorkflow -- output_format structured output', () => {
       yield { type: 'result', sessionId: 'sid-1', structuredOutput: structuredJson };
     });
 
-    const mockDeps = createMockDeps();
+    const store = createMockStore();
+    const mockDeps = createMockDeps(store);
     const platform = createMockPlatform();
     const workflowRun = makeWorkflowRun('output-fmt-run', {
       user_message: 'classify this PR',
@@ -1409,6 +1411,23 @@ describe('executeDagWorkflow -- output_format structured output', () => {
     // The test node's when condition should evaluate to false (run_tests == 'false', not 'true')
     // So sendQuery should be called for classify + review = 2 times (not 3)
     expect(mockSendQueryDag.mock.calls.length).toBe(2);
+
+    const eventCalls = (store.createWorkflowEvent as ReturnType<typeof mock>).mock.calls;
+    const completedEvent = eventCalls.find(
+      (call: unknown[]) =>
+        (call[0] as { event_type: string }).event_type === 'node_completed' &&
+        (call[0] as { step_name: string }).step_name === 'classify'
+    );
+    expect(completedEvent).toBeDefined();
+    expect((completedEvent![0] as { data: { node_output: string } }).data.node_output).toContain(
+      'Let me analyze the PR scope...'
+    );
+    expect(
+      (completedEvent![0] as { data: { node_output: string } }).data.node_output
+    ).not.toContain('"run_code_review"');
+    expect((completedEvent![0] as { data: { node_payload: unknown } }).data.node_payload).toEqual(
+      structuredJson
+    );
   });
 
   it('does NOT override nodeOutputText with structuredOutput when output_format is absent', async () => {
@@ -1575,6 +1594,63 @@ describe('executeDagWorkflow -- output_format structured output', () => {
     });
   });
 
+  it('suppresses pure JSON assistant output when structured payload already exists', async () => {
+    const classifyJson = { status: 'ok' };
+    const store = createMockStore();
+    const mockDeps = createMockDeps(store);
+    const platform = createMockPlatform();
+    const workflowRun = makeWorkflowRun('structured-output-suppressed');
+
+    mockGetAgentProviderDag.mockImplementation(() => ({
+      sendQuery: mockSendQueryDag,
+      getType: () => 'codex',
+      getCapabilities: mockCodexCapabilities,
+    }));
+    mockSendQueryDag.mockImplementation(function* () {
+      yield { type: 'assistant', content: JSON.stringify(classifyJson) };
+      yield { type: 'result', sessionId: 'sid-json-only', structuredOutput: classifyJson };
+    });
+
+    await executeDagWorkflow(
+      mockDeps,
+      platform,
+      'conv-json-only',
+      testDir,
+      {
+        name: 'json-only-output-format',
+        nodes: [
+          {
+            id: 'classify',
+            command: 'classify',
+            output_format: { type: 'object', properties: { status: { type: 'string' } } },
+          },
+        ],
+      },
+      workflowRun,
+      'codex',
+      undefined,
+      join(testDir, 'artifacts'),
+      join(testDir, 'logs'),
+      'main',
+      'docs/',
+      minimalConfig
+    );
+
+    expect((platform.sendMessage as ReturnType<typeof mock>).mock.calls).toEqual([]);
+
+    const eventCalls = (store.createWorkflowEvent as ReturnType<typeof mock>).mock.calls;
+    const completedEvent = eventCalls.find(
+      (call: unknown[]) =>
+        (call[0] as { event_type: string }).event_type === 'node_completed' &&
+        (call[0] as { step_name: string }).step_name === 'classify'
+    );
+    expect(completedEvent).toBeDefined();
+    expect((completedEvent![0] as { data: { node_output: string } }).data.node_output).toBe('');
+    expect((completedEvent![0] as { data: { node_payload: unknown } }).data.node_payload).toEqual(
+      classifyJson
+    );
+  });
+
   it('does not warn about missing structuredOutput for Codex nodes', async () => {
     // Codex provider normalizes inline JSON into structuredOutput on the result chunk
     mockGetAgentProviderDag.mockImplementation(() => ({
@@ -1624,6 +1700,72 @@ describe('executeDagWorkflow -- output_format structured output', () => {
       .map(call => call[1] as string)
       .filter(msg => typeof msg === 'string' && msg.includes('did not return structured output'));
     expect(warningMessages).toHaveLength(0);
+  });
+
+  it('treats classify nodes as deterministic classifiers with fresh context and no tools by default', async () => {
+    mockSendQueryDag
+      .mockImplementationOnce(function* () {
+        yield { type: 'assistant', content: 'previous step' };
+        yield { type: 'result', sessionId: 'sid-prev' };
+      })
+      .mockImplementationOnce(function* () {
+        yield { type: 'assistant', content: '{"route":"direct"}' };
+        yield {
+          type: 'result',
+          sessionId: 'sid-classify',
+          structuredOutput: { route: 'direct' },
+        };
+      });
+
+    const mockDeps = createMockDeps();
+    const platform = createMockPlatform();
+    const workflowRun = makeWorkflowRun('classify-node-run', {
+      user_message: 'route this story',
+    });
+
+    const nodes: DagNode[] = [
+      { id: 'prep', prompt: 'Prepare context' },
+      {
+        id: 'route',
+        classify: 'Choose the route for this story',
+        depends_on: ['prep'],
+        output_format: {
+          type: 'object',
+          properties: {
+            route: { type: 'string' },
+          },
+          required: ['route'],
+        },
+      },
+    ];
+
+    await executeDagWorkflow(
+      mockDeps,
+      platform,
+      'conv-classify-node',
+      testDir,
+      { name: 'classify-node-test', nodes },
+      workflowRun,
+      'claude',
+      undefined,
+      join(testDir, 'artifacts'),
+      join(testDir, 'logs'),
+      'main',
+      'docs/',
+      minimalConfig
+    );
+
+    expect(mockSendQueryDag.mock.calls.length).toBe(2);
+
+    const classifyCall = mockSendQueryDag.mock.calls[1];
+    const classifyPrompt = classifyCall[0] as string;
+    const classifyResumeSessionId = classifyCall[2] as string | undefined;
+    const classifyOptions = classifyCall[3] as SendQueryOptions;
+
+    expect(classifyPrompt).toContain('Choose the route for this story');
+    expect(classifyResumeSessionId).toBeUndefined();
+    expect(classifyOptions.nodeConfig?.allowed_tools).toEqual([]);
+    expect(classifyOptions.systemPrompt).toContain('deterministic workflow classifier');
   });
 });
 
@@ -2589,7 +2731,7 @@ describe('executeDagWorkflow -- resume with priorCompletedNodes', () => {
     const platform = createMockPlatform();
     const workflowRun = makeWorkflowRun();
 
-    const priorCompletedNodes = new Map([['step1', 'prior step1 output']]);
+    const priorCompletedNodes = new Map([['step1', makeOutput('completed', 'prior step1 output')]]);
 
     await executeDagWorkflow(
       mockDeps,
@@ -2633,7 +2775,9 @@ describe('executeDagWorkflow -- resume with priorCompletedNodes', () => {
       yield { type: 'result', sessionId: 'session-id' };
     });
 
-    const priorCompletedNodes = new Map([['step1', 'hello from prior run']]);
+    const priorCompletedNodes = new Map([
+      ['step1', makeOutput('completed', 'hello from prior run')],
+    ]);
 
     await executeDagWorkflow(
       mockDeps,
@@ -2670,7 +2814,7 @@ describe('executeDagWorkflow -- resume with priorCompletedNodes', () => {
     const platform = createMockPlatform();
     const workflowRun = makeWorkflowRun('resume-run-id');
 
-    const priorCompletedNodes = new Map([['step1', 'prior output']]);
+    const priorCompletedNodes = new Map([['step1', makeOutput('completed', 'prior output')]]);
 
     await executeDagWorkflow(
       mockDeps,

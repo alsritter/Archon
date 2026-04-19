@@ -26,6 +26,7 @@ import type {
   ApprovalNode,
   BashNode,
   CommandNode,
+  ClassifyNode,
   PromptNode,
   LoopNode,
   ScriptNode,
@@ -38,6 +39,7 @@ import type {
 } from './schemas';
 import {
   isBashNode,
+  isClassifyNode,
   isLoopNode,
   isApprovalNode,
   isCancelNode,
@@ -107,6 +109,19 @@ interface SendMessageContext {
 /** Default DAG node retry for TRANSIENT errors */
 const DEFAULT_NODE_MAX_RETRIES = 2;
 const DEFAULT_NODE_RETRY_DELAY_MS = 3000;
+const CLASSIFY_NODE_SYSTEM_PROMPT = [
+  'You are a deterministic workflow classifier.',
+  'Your only job is to classify or route the provided input.',
+  'Do not call tools, do not edit files, and do not perform side effects.',
+  'Return only the structured result that matches the requested schema.',
+  'If the input is ambiguous, choose the closest valid classification and express uncertainty only inside the schema fields.',
+].join(' ');
+
+function buildClassifySystemPrompt(nodeSystemPrompt: string | undefined): string {
+  const trimmedNodePrompt = nodeSystemPrompt?.trim();
+  if (!trimmedNodePrompt) return CLASSIFY_NODE_SYSTEM_PROMPT;
+  return `${CLASSIFY_NODE_SYSTEM_PROMPT}\n\nAdditional classifier instructions:\n${trimmedNodePrompt}`;
+}
 
 /**
  * Get effective retry config for a DAG node.
@@ -152,8 +167,12 @@ async function safeSendMessage(
   context?: SendMessageContext,
   metadata?: WorkflowMessageMetadata
 ): Promise<boolean> {
+  const enrichedMetadata =
+    context?.nodeName && !metadata?.nodeName
+      ? { ...metadata, nodeName: context.nodeName }
+      : metadata;
   try {
-    await platform.sendMessage(conversationId, message, metadata);
+    await platform.sendMessage(conversationId, message, enrichedMetadata);
     return true;
   } catch (error) {
     const err = error as Error;
@@ -283,6 +302,7 @@ async function resolveNodeProviderAndModel(
   model: string | undefined;
   options: SendQueryOptions | undefined;
 }> {
+  const isClassify = isClassifyNode(node);
   const provider: string = node.provider ?? inferProviderFromModel(node.model, workflowProvider);
 
   const providerAssistantConfig = config.assistants[provider];
@@ -349,7 +369,10 @@ async function resolveNodeProviderAndModel(
   if (config.envVars && Object.keys(config.envVars).length > 0) {
     baseOptions.env = config.envVars;
   }
-  if (node.systemPrompt !== undefined) baseOptions.systemPrompt = node.systemPrompt;
+  const effectiveSystemPrompt = isClassify
+    ? buildClassifySystemPrompt(node.systemPrompt)
+    : node.systemPrompt;
+  if (effectiveSystemPrompt !== undefined) baseOptions.systemPrompt = effectiveSystemPrompt;
   if (node.maxBudgetUsd !== undefined) baseOptions.maxBudgetUsd = node.maxBudgetUsd;
   const fb = node.fallbackModel ?? workflowLevelOptions.fallbackModel;
   if (fb) baseOptions.fallbackModel = fb;
@@ -362,7 +385,7 @@ async function resolveNodeProviderAndModel(
     mcp: node.mcp,
     hooks: node.hooks,
     skills: node.skills,
-    allowed_tools: node.allowed_tools,
+    allowed_tools: isClassify ? (node.allowed_tools ?? []) : node.allowed_tools,
     denied_tools: node.denied_tools,
     effort: node.effort ?? workflowLevelOptions.effort,
     thinking: node.thinking ?? workflowLevelOptions.thinking,
@@ -370,7 +393,7 @@ async function resolveNodeProviderAndModel(
     betas: node.betas ?? workflowLevelOptions.betas,
     output_format: node.output_format,
     maxBudgetUsd: node.maxBudgetUsd,
-    systemPrompt: node.systemPrompt,
+    systemPrompt: effectiveSystemPrompt,
     fallbackModel: fb,
   };
 
@@ -481,7 +504,7 @@ async function executeNodeInternal(
   conversationId: string,
   cwd: string,
   workflowRun: WorkflowRun,
-  node: CommandNode | PromptNode,
+  node: CommandNode | PromptNode | ClassifyNode,
   provider: string,
   nodeOptions: SendQueryOptions | undefined,
   artifactsDir: string,
@@ -495,31 +518,7 @@ async function executeNodeInternal(
 ): Promise<NodeExecutionResult> {
   const nodeStartTime = Date.now();
   const nodeContext: SendMessageContext = { workflowId: workflowRun.id, nodeName: node.id };
-
-  getLog().info({ nodeId: node.id, provider }, 'dag_node_started');
-  await logNodeStart(logDir, workflowRun.id, node.id, node.command ?? '<inline>');
-
-  deps.store
-    .createWorkflowEvent({
-      workflow_run_id: workflowRun.id,
-      event_type: 'node_started',
-      step_name: node.id,
-      data: { command: node.command ?? null, provider },
-    })
-    .catch((err: Error) => {
-      getLog().error(
-        { err, workflowRunId: workflowRun.id, eventType: 'node_started' },
-        'workflow_event_persist_failed'
-      );
-    });
-
   const emitter = getWorkflowEventEmitter();
-  emitter.emit({
-    type: 'node_started',
-    runId: workflowRun.id,
-    nodeId: node.id,
-    nodeName: node.command ?? node.id,
-  });
 
   // Load prompt
   let rawPrompt: string;
@@ -552,6 +551,8 @@ async function executeNodeInternal(
       return { state: 'failed', output: '', error: errMsg };
     }
     rawPrompt = promptResult.content;
+  } else if (isClassifyNode(node)) {
+    rawPrompt = node.classify;
   } else {
     // node is PromptNode — prompt: string is guaranteed by the discriminated union
     rawPrompt = node.prompt;
@@ -584,6 +585,30 @@ async function executeNodeInternal(
 
   // Substitute upstream node output references
   const finalPrompt = substituteNodeOutputRefs(substitutedPrompt, nodeOutputs);
+  getLog().info({ nodeId: node.id, provider }, 'dag_node_started');
+  await logNodeStart(logDir, workflowRun.id, node.id, node.command ?? '<inline>');
+
+  deps.store
+    .createWorkflowEvent({
+      workflow_run_id: workflowRun.id,
+      event_type: 'node_started',
+      step_name: node.id,
+      data: { command: node.command ?? null, provider, resolved_prompt: finalPrompt },
+    })
+    .catch((err: Error) => {
+      getLog().error(
+        { err, workflowRunId: workflowRun.id, eventType: 'node_started' },
+        'workflow_event_persist_failed'
+      );
+    });
+
+  emitter.emit({
+    type: 'node_started',
+    runId: workflowRun.id,
+    nodeId: node.id,
+    nodeName: node.command ?? node.id,
+    resolvedPrompt: finalPrompt,
+  });
 
   const aiClient = deps.getAgentProvider(provider);
   const streamingMode = platform.getStreamingMode();
@@ -596,6 +621,7 @@ async function executeNodeInternal(
   let nodeStopReason: string | undefined;
   let nodeNumTurns: number | undefined;
   let nodeModelUsage: Record<string, unknown> | undefined;
+  let nodePayload: NodeOutput['payload'];
   const batchMessages: string[] = [];
 
   // Create per-node abort controller for idle timeout cleanup
@@ -663,7 +689,7 @@ async function executeNodeInternal(
 
       if (msg.type === 'assistant' && msg.content) {
         nodeOutputText += msg.content; // ALWAYS capture for $node_id.output
-        if (streamingMode === 'stream') {
+        if (streamingMode === 'stream' && !nodeOptions?.outputFormat) {
           await safeSendMessage(platform, conversationId, msg.content, nodeContext);
         } else {
           batchMessages.push(msg.content);
@@ -826,13 +852,13 @@ async function executeNodeInternal(
     }
 
     // When output_format is set and the provider returned structured_output,
-    // use it instead of the concatenated assistant text (which includes prose).
-    // Each provider normalizes its own structured output onto the result chunk —
-    // no provider-specific branching here.
+    // store it on payload for downstream machine consumers and keep only
+    // human-readable residue in the node output text.
     if (nodeOptions?.outputFormat) {
       if (structuredOutput !== undefined) {
+        let structuredText: string;
         try {
-          nodeOutputText =
+          structuredText =
             typeof structuredOutput === 'string'
               ? structuredOutput
               : JSON.stringify(structuredOutput);
@@ -841,6 +867,15 @@ async function executeNodeInternal(
           throw new Error(
             `Node '${node.id}': failed to serialize structured_output to JSON: ${err.message}`
           );
+        }
+        nodePayload = structuredOutput as NodeOutput['payload'];
+        const trimmedOutput = nodeOutputText.trim();
+        if (trimmedOutput === structuredText) {
+          nodeOutputText = '';
+        } else if (trimmedOutput.endsWith(structuredText)) {
+          nodeOutputText = trimmedOutput
+            .slice(0, Math.max(0, trimmedOutput.length - structuredText.length))
+            .trimEnd();
         }
         getLog().debug({ nodeId: node.id, streamingMode }, 'dag.structured_output_override');
       } else {
@@ -910,12 +945,14 @@ async function executeNodeInternal(
       return { state: 'failed', output: nodeOutputText, error: 'Cancelled by user' };
     }
 
-    if (streamingMode === 'batch' && batchMessages.length > 0) {
+    if (batchMessages.length > 0) {
       const batchContent =
-        structuredOutput !== undefined && nodeOptions?.outputFormat
+        nodePayload !== undefined && nodeOptions?.outputFormat
           ? nodeOutputText
           : batchMessages.join('\n\n');
-      await safeSendMessage(platform, conversationId, batchContent, nodeContext);
+      if (batchContent.trim()) {
+        await safeSendMessage(platform, conversationId, batchContent, nodeContext);
+      }
     }
 
     // Detect credit exhaustion: SDK returns it as assistant text, not a thrown error.
@@ -969,6 +1006,8 @@ async function executeNodeInternal(
         data: {
           duration_ms: duration,
           node_output: nodeOutputText,
+          resolved_prompt: finalPrompt,
+          ...(nodePayload !== undefined ? { node_payload: nodePayload } : {}),
           ...(nodeCostUsd !== undefined ? { cost_usd: nodeCostUsd } : {}),
           ...(nodeStopReason ? { stop_reason: nodeStopReason } : {}),
           ...(nodeNumTurns !== undefined ? { num_turns: nodeNumTurns } : {}),
@@ -991,6 +1030,7 @@ async function executeNodeInternal(
       ...(nodeCostUsd !== undefined ? { costUsd: nodeCostUsd } : {}),
       ...(nodeStopReason ? { stopReason: nodeStopReason } : {}),
       ...(nodeNumTurns !== undefined ? { numTurns: nodeNumTurns } : {}),
+      resolvedPrompt: finalPrompt,
     });
 
     // Clean up throttle entries on completion
@@ -1000,6 +1040,7 @@ async function executeNodeInternal(
     return {
       state: 'completed',
       output: nodeOutputText,
+      ...(nodePayload !== undefined ? { payload: nodePayload } : {}),
       sessionId: newSessionId,
       costUsd: nodeCostUsd,
     };
@@ -1547,6 +1588,49 @@ async function executeLoopNode(
       return { state: 'failed', output: '', error: `Workflow ${effectiveStatus}` };
     }
 
+    // Build prompt — substituteWorkflowVariables throws if $BASE_BRANCH referenced but empty
+    // Pass loopUserInput on the first resumed iteration; '' on all others (non-interactive
+    // or subsequent iterations) so $LOOP_USER_INPUT substitutes to empty string explicitly.
+    const { prompt: substitutedPrompt } = substituteWorkflowVariables(
+      loop.prompt,
+      workflowRun.id,
+      workflowRun.user_message,
+      artifactsDir,
+      baseBranch,
+      docsDir,
+      issueContext,
+      i === startIteration ? loopUserInput : ''
+    );
+    const finalPrompt = substituteNodeOutputRefs(substitutedPrompt, nodeOutputs);
+
+    if (i === startIteration) {
+      getLog().info(
+        { nodeId: node.id, provider: workflowProvider, type: 'loop' },
+        'dag_node_started'
+      );
+      await logNodeStart(logDir, workflowRun.id, node.id, node.id);
+      deps.store
+        .createWorkflowEvent({
+          workflow_run_id: workflowRun.id,
+          event_type: 'node_started',
+          step_name: node.id,
+          data: { provider: workflowProvider, resolved_prompt: finalPrompt },
+        })
+        .catch((err: Error) => {
+          getLog().error(
+            { err, workflowRunId: workflowRun.id, eventType: 'node_started' },
+            'workflow_event_persist_failed'
+          );
+        });
+      getWorkflowEventEmitter().emit({
+        type: 'node_started',
+        runId: workflowRun.id,
+        nodeId: node.id,
+        nodeName: node.id,
+        resolvedPrompt: finalPrompt,
+      });
+    }
+
     // Emit iteration started
     getWorkflowEventEmitter().emit({
       type: 'loop_iteration_started',
@@ -1554,13 +1638,19 @@ async function executeLoopNode(
       nodeId: node.id,
       iteration: i,
       maxIterations: loop.max_iterations,
+      resolvedPrompt: finalPrompt,
     });
     deps.store
       .createWorkflowEvent({
         workflow_run_id: workflowRun.id,
         event_type: 'loop_iteration_started',
         step_name: node.id,
-        data: { iteration: i, maxIterations: loop.max_iterations, nodeId: node.id },
+        data: {
+          iteration: i,
+          maxIterations: loop.max_iterations,
+          nodeId: node.id,
+          resolved_prompt: finalPrompt,
+        },
       })
       .catch((err: Error) => {
         logEventStoreError(err, i);
@@ -1577,21 +1667,6 @@ async function executeLoopNode(
     const iterationAbortController = new AbortController();
 
     try {
-      // Build prompt — substituteWorkflowVariables throws if $BASE_BRANCH referenced but empty
-      // Pass loopUserInput on the first resumed iteration; '' on all others (non-interactive
-      // or subsequent iterations) so $LOOP_USER_INPUT substitutes to empty string explicitly.
-      const { prompt: substitutedPrompt } = substituteWorkflowVariables(
-        loop.prompt,
-        workflowRun.id,
-        workflowRun.user_message,
-        artifactsDir,
-        baseBranch,
-        docsDir,
-        issueContext,
-        i === startIteration ? loopUserInput : ''
-      );
-      const finalPrompt = substituteNodeOutputRefs(substitutedPrompt, nodeOutputs);
-
       const iterationOptions: SendQueryOptions | undefined = {
         ...resolvedOptions,
         abortSignal: iterationAbortController.signal,
@@ -1819,13 +1894,20 @@ async function executeLoopNode(
       iteration: i,
       duration,
       completionDetected,
+      resolvedPrompt: finalPrompt,
     });
     deps.store
       .createWorkflowEvent({
         workflow_run_id: workflowRun.id,
         event_type: 'loop_iteration_completed',
         step_name: node.id,
-        data: { iteration: i, duration, completionDetected, nodeId: node.id },
+        data: {
+          iteration: i,
+          duration,
+          completionDetected,
+          nodeId: node.id,
+          resolved_prompt: finalPrompt,
+        },
       })
       .catch((err: Error) => {
         logEventStoreError(err, i);
@@ -1858,6 +1940,7 @@ async function executeLoopNode(
           data: {
             duration_ms: Date.now() - iterationStart,
             node_output: lastIterationOutput,
+            resolved_prompt: finalPrompt,
             ...(loopTotalCostUsd !== undefined ? { cost_usd: loopTotalCostUsd } : {}),
             ...(loopFinalStopReason ? { stop_reason: loopFinalStopReason } : {}),
             ...(loopTotalNumTurns !== undefined ? { num_turns: loopTotalNumTurns } : {}),
@@ -1878,6 +1961,7 @@ async function executeLoopNode(
         ...(loopTotalCostUsd !== undefined ? { costUsd: loopTotalCostUsd } : {}),
         ...(loopFinalStopReason ? { stopReason: loopFinalStopReason } : {}),
         ...(loopTotalNumTurns !== undefined ? { numTurns: loopTotalNumTurns } : {}),
+        resolvedPrompt: finalPrompt,
       });
       return {
         state: 'completed',
@@ -2534,7 +2618,7 @@ export async function executeDagWorkflow(
           // 5. Determine session — parallel or context:fresh → always fresh
           // Parallel layers always get fresh sessions; explicit 'fresh' context also forces it.
           // 'shared' forces continuation. Default: fresh for parallel, inherited for sequential.
-          const isFresh = isParallelLayer || node.context === 'fresh';
+          const isFresh = isParallelLayer || node.context === 'fresh' || isClassifyNode(node);
           const resumeSessionId = isFresh ? undefined : lastSequentialSessionId;
 
           // 6. Execute with retry for transient failures

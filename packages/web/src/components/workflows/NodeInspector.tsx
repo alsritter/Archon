@@ -226,6 +226,19 @@ function GeneralTab({
               updates.bashScript = undefined;
               updates.bashTimeout = undefined;
               updates.label = 'Prompt';
+            } else if (newType === 'classify') {
+              updates.bashScript = undefined;
+              updates.bashTimeout = undefined;
+              updates.label = 'Classifier';
+              updates.promptText = '';
+              updates.output_format = {
+                type: 'object',
+                properties: {
+                  label: { type: 'string' },
+                  rationale: { type: 'string' },
+                },
+                required: ['label'],
+              };
             } else if (newType === 'bash') {
               updates.promptText = undefined;
               updates.label = 'Shell';
@@ -235,6 +248,37 @@ function GeneralTab({
               updates.hooks = undefined;
               updates.mcp = undefined;
               updates.skills = undefined;
+            } else if (newType === 'script') {
+              updates.promptText = undefined;
+              updates.label = 'Script';
+              updates.allowed_tools = undefined;
+              updates.denied_tools = undefined;
+              updates.output_format = undefined;
+              updates.hooks = undefined;
+              updates.mcp = undefined;
+              updates.skills = undefined;
+            } else if (newType === 'approval') {
+              updates.label = 'Approval';
+              updates.promptText = '';
+              updates.approval = {
+                message: '',
+                capture_response: false,
+              };
+              updates.allowed_tools = undefined;
+              updates.denied_tools = undefined;
+              updates.output_format = undefined;
+              updates.hooks = undefined;
+              updates.mcp = undefined;
+              updates.skills = undefined;
+            } else if (newType === 'loop') {
+              updates.label = 'Loop';
+              updates.promptText = '';
+              updates.loop = {
+                prompt: '',
+                until: '',
+                max_iterations: 3,
+                fresh_context: false,
+              };
             }
             onUpdate(updates);
           }}
@@ -242,7 +286,11 @@ function GeneralTab({
         >
           <option value="command">Command</option>
           <option value="prompt">Prompt</option>
+          <option value="classify">Classify</option>
           <option value="bash">Bash</option>
+          <option value="script">Script</option>
+          <option value="approval">Approval</option>
+          <option value="loop">Loop</option>
         </select>
       </Field>
 
@@ -250,9 +298,14 @@ function GeneralTab({
       {node.nodeType === 'command' && (
         <Field label="Command">
           <select
-            value={node.label}
+            value={node.label || node.command || ''}
             onChange={(e): void => {
-              onUpdate({ label: e.target.value });
+              const selectedCommand = commands.find(command => command.name === e.target.value);
+              onUpdate({
+                label: e.target.value,
+                command: e.target.value,
+                commandPreview: selectedCommand?.preview,
+              });
             }}
             className={selectClass}
           >
@@ -263,10 +316,13 @@ function GeneralTab({
               </option>
             ))}
           </select>
+          {node.commandPreview && (
+            <p className="text-[11px] leading-relaxed text-text-tertiary">{node.commandPreview}</p>
+          )}
         </Field>
       )}
 
-      {node.nodeType === 'prompt' && (
+      {(node.nodeType === 'prompt' || node.nodeType === 'classify') && (
         <Field label="Prompt">
           <textarea
             value={node.promptText ?? ''}
@@ -274,7 +330,11 @@ function GeneralTab({
               onUpdate({ promptText: e.target.value });
             }}
             rows={5}
-            placeholder="Enter inline prompt..."
+            placeholder={
+              node.nodeType === 'classify'
+                ? 'Describe the classification task and labels...'
+                : 'Enter inline prompt...'
+            }
             className={cn(textareaClass, 'min-h-[120px]')}
           />
         </Field>
@@ -302,6 +362,167 @@ function GeneralTab({
                 onUpdate({ bashTimeout: v ? Number(v) : undefined });
               }}
               placeholder="120000"
+              className={inputClass}
+            />
+          </Field>
+        </>
+      )}
+
+      {node.nodeType === 'script' && (
+        <>
+          <Field label="Script">
+            <textarea
+              value={node.bashScript ?? ''}
+              onChange={(e): void => {
+                onUpdate({ bashScript: e.target.value });
+              }}
+              rows={5}
+              placeholder="import fs from 'node:fs';"
+              className={cn(textareaClass, 'min-h-[120px]')}
+            />
+          </Field>
+          <Field label="Runtime">
+            <select
+              value={node.runtime ?? 'bun'}
+              onChange={(e): void => {
+                onUpdate({ runtime: e.target.value as 'bun' | 'uv' });
+              }}
+              className={selectClass}
+            >
+              <option value="bun">bun</option>
+              <option value="uv">uv</option>
+            </select>
+          </Field>
+          <Field label="Dependencies">
+            <input
+              type="text"
+              value={node.deps?.join(', ') ?? ''}
+              onChange={(e): void => {
+                onUpdate({ deps: parseToolsList(e.target.value) });
+              }}
+              placeholder="pkg1, pkg2..."
+              className={inputClass}
+            />
+          </Field>
+          <Field label="Timeout (ms)">
+            <input
+              type="number"
+              value={node.bashTimeout ?? ''}
+              onChange={(e): void => {
+                const v = e.target.value;
+                onUpdate({ bashTimeout: v ? Number(v) : undefined });
+              }}
+              placeholder="120000"
+              className={inputClass}
+            />
+          </Field>
+        </>
+      )}
+
+      {node.nodeType === 'approval' && (
+        <>
+          <Field label="Approval Message">
+            <textarea
+              value={node.approval?.message ?? node.promptText ?? ''}
+              onChange={(e): void => {
+                onUpdate({
+                  promptText: e.target.value,
+                  approval: {
+                    message: e.target.value,
+                    capture_response: node.approval?.capture_response,
+                    on_reject: node.approval?.on_reject,
+                  },
+                });
+              }}
+              rows={4}
+              placeholder="请确认是否继续..."
+              className={cn(textareaClass, 'min-h-[100px]')}
+            />
+          </Field>
+          <Field label="Capture Response">
+            <select
+              value={node.approval?.capture_response ? 'true' : 'false'}
+              onChange={(e): void => {
+                onUpdate({
+                  approval: {
+                    message: node.approval?.message ?? node.promptText ?? '',
+                    capture_response: e.target.value === 'true',
+                    on_reject: node.approval?.on_reject,
+                  },
+                });
+              }}
+              className={selectClass}
+            >
+              <option value="false">false</option>
+              <option value="true">true</option>
+            </select>
+          </Field>
+        </>
+      )}
+
+      {node.nodeType === 'loop' && (
+        <>
+          <Field label="Loop Prompt">
+            <textarea
+              value={node.loop?.prompt ?? node.promptText ?? ''}
+              onChange={(e): void => {
+                onUpdate({
+                  promptText: e.target.value,
+                  loop: {
+                    prompt: e.target.value,
+                    until: node.loop?.until ?? '',
+                    max_iterations: node.loop?.max_iterations ?? 3,
+                    fresh_context: node.loop?.fresh_context ?? false,
+                    until_bash: node.loop?.until_bash,
+                    interactive: node.loop?.interactive,
+                    gate_message: node.loop?.gate_message,
+                  },
+                });
+              }}
+              rows={5}
+              placeholder="继续执行当前 loop..."
+              className={cn(textareaClass, 'min-h-[120px]')}
+            />
+          </Field>
+          <Field label="Until Signal">
+            <input
+              type="text"
+              value={node.loop?.until ?? ''}
+              onChange={(e): void => {
+                onUpdate({
+                  loop: {
+                    prompt: node.loop?.prompt ?? node.promptText ?? '',
+                    until: e.target.value,
+                    max_iterations: node.loop?.max_iterations ?? 3,
+                    fresh_context: node.loop?.fresh_context ?? false,
+                    until_bash: node.loop?.until_bash,
+                    interactive: node.loop?.interactive,
+                    gate_message: node.loop?.gate_message,
+                  },
+                });
+              }}
+              placeholder="DONE"
+              className={inputClass}
+            />
+          </Field>
+          <Field label="Max Iterations">
+            <input
+              type="number"
+              min={1}
+              value={node.loop?.max_iterations ?? 3}
+              onChange={(e): void => {
+                onUpdate({
+                  loop: {
+                    prompt: node.loop?.prompt ?? node.promptText ?? '',
+                    until: node.loop?.until ?? '',
+                    max_iterations: Number(e.target.value || 3),
+                    fresh_context: node.loop?.fresh_context ?? false,
+                    until_bash: node.loop?.until_bash,
+                    interactive: node.loop?.interactive,
+                    gate_message: node.loop?.gate_message,
+                  },
+                });
+              }}
               className={inputClass}
             />
           </Field>
@@ -341,11 +562,12 @@ function ExecutionTab({
   node: DagNodeData;
   onUpdate: (updates: Partial<DagNodeData>) => void;
 }): React.ReactElement {
-  const isBash = node.nodeType === 'bash';
+  const isNonAiNode =
+    node.nodeType === 'bash' || node.nodeType === 'script' || node.nodeType === 'approval';
 
   return (
     <div className="flex flex-col gap-3 p-3">
-      {!isBash && (
+      {!isNonAiNode && (
         <>
           <ProviderField node={node} onUpdate={onUpdate} selectClass={selectClass} />
 
@@ -713,7 +935,8 @@ function DagInspector({
   onDelete,
   onClose,
 }: NodeInspectorProps): React.ReactElement {
-  const isBash = node.nodeType === 'bash';
+  const hidesAiTabs =
+    node.nodeType === 'bash' || node.nodeType === 'script' || node.nodeType === 'approval';
 
   return (
     <div key={node.id} className="flex flex-col h-full border-l border-border bg-surface">
@@ -741,12 +964,12 @@ function DagInspector({
           <TabsTrigger value="execution" className="text-xs">
             Execution
           </TabsTrigger>
-          {!isBash && (
+          {!hidesAiTabs && (
             <TabsTrigger value="tools" className="text-xs">
               Tools
             </TabsTrigger>
           )}
-          {!isBash && (
+          {!hidesAiTabs && (
             <TabsTrigger value="advanced" className="text-xs">
               Advanced
             </TabsTrigger>
@@ -762,13 +985,13 @@ function DagInspector({
             <ExecutionTab node={node} onUpdate={onUpdate} />
           </TabsContent>
 
-          {!isBash && (
+          {!hidesAiTabs && (
             <TabsContent value="tools">
               <ToolsTab node={node} onUpdate={onUpdate} />
             </TabsContent>
           )}
 
-          {!isBash && (
+          {!hidesAiTabs && (
             <TabsContent value="advanced">
               <AdvancedTab key={node.id} node={node} onUpdate={onUpdate} onDelete={onDelete} />
             </TabsContent>

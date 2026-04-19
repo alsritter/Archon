@@ -7,7 +7,8 @@ import { cn } from '@/lib/utils';
 export interface DagNodeData extends DagNode {
   /** For command nodes: the command name. For prompt nodes: display label ("Prompt"). For bash: display label ("Shell"). */
   label: string;
-  nodeType: 'command' | 'prompt' | 'bash' | 'script' | 'approval' | 'loop';
+  nodeType: 'command' | 'prompt' | 'classify' | 'bash' | 'script' | 'approval' | 'loop';
+  commandPreview?: string;
   promptText?: string;
   bashScript?: string;
   bashTimeout?: number;
@@ -29,6 +30,12 @@ const TYPE_CONFIG = {
     stripeColor: 'bg-node-prompt',
     badgeBg: 'bg-node-prompt/20',
     badgeText: 'text-node-prompt',
+  },
+  classify: {
+    badge: 'CLASSIFY',
+    stripeColor: 'bg-node-classify',
+    badgeBg: 'bg-node-classify/20',
+    badgeText: 'text-node-classify',
   },
   bash: {
     badge: 'BASH',
@@ -56,11 +63,20 @@ const TYPE_CONFIG = {
   },
 } as const;
 
+function getNodeDisplayLabel(data: DagNodeData): string {
+  if (data.label) return data.label;
+  if (data.nodeType === 'command' && typeof data.command === 'string') return data.command;
+  return '';
+}
+
 function getContentPreview(data: DagNodeData): string {
+  const displayLabel = getNodeDisplayLabel(data);
+
   switch (data.nodeType) {
     case 'command':
-      return data.label;
+      return data.commandPreview ?? displayLabel;
     case 'prompt':
+    case 'classify':
       return data.promptText?.split('\n')[0] ?? '';
     case 'bash':
     case 'script':
@@ -81,6 +97,7 @@ function MetadataPill({ children }: { children: React.ReactNode }): React.ReactE
 
 function DagNodeRender({ data, selected }: NodeProps<DagFlowNode>): React.ReactElement {
   const config = TYPE_CONFIG[data.nodeType];
+  const displayLabel = getNodeDisplayLabel(data);
   const preview = getContentPreview(data);
   const hasPills =
     data.model ||
@@ -115,7 +132,7 @@ function DagNodeRender({ data, selected }: NodeProps<DagFlowNode>): React.ReactE
           >
             {config.badge}
           </span>
-          <span className="text-xs font-medium text-text-primary truncate">{data.label}</span>
+          <span className="text-xs font-medium text-text-primary truncate">{displayLabel}</span>
         </div>
 
         {/* Content preview */}

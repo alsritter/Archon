@@ -41,6 +41,7 @@ export function mapWorkflowEvent(event: WorkflowEmitterEvent): string | null {
         name: `iteration-${String(event.iteration)}`,
         status: 'running',
         iteration: event.iteration,
+        resolvedPrompt: event.resolvedPrompt,
         timestamp: Date.now(),
       });
 
@@ -57,6 +58,7 @@ export function mapWorkflowEvent(event: WorkflowEmitterEvent): string | null {
         status: 'completed',
         duration: event.duration,
         iteration: event.iteration,
+        resolvedPrompt: event.resolvedPrompt,
         timestamp: Date.now(),
       });
 
@@ -106,6 +108,10 @@ export function mapWorkflowEvent(event: WorkflowEmitterEvent): string | null {
         duration: event.type === 'node_completed' ? event.duration : undefined,
         error: event.type === 'node_failed' ? event.error : undefined,
         reason: event.type === 'node_skipped' ? event.reason : undefined,
+        resolvedPrompt:
+          event.type === 'node_started' || event.type === 'node_completed'
+            ? event.resolvedPrompt
+            : undefined,
         timestamp: Date.now(),
       });
 

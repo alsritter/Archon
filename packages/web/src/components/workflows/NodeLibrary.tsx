@@ -12,10 +12,15 @@ interface NodeLibraryProps {
 const NODE_TYPE_COLORS: Record<string, string> = {
   command: 'bg-node-command',
   prompt: 'bg-node-prompt',
+  classify: 'bg-node-classify',
   bash: 'bg-node-bash',
 };
 
-function onDragStart(e: React.DragEvent, type: 'command' | 'prompt' | 'bash', name: string): void {
+function onDragStart(
+  e: React.DragEvent,
+  type: 'command' | 'prompt' | 'classify' | 'bash',
+  name: string
+): void {
   e.dataTransfer.setData('application/reactflow-type', type);
   e.dataTransfer.setData('application/reactflow-command', name);
   e.dataTransfer.effectAllowed = 'move';
@@ -36,7 +41,7 @@ function DraggableItem({
   name,
   displayName,
 }: {
-  type: 'command' | 'prompt' | 'bash';
+  type: 'command' | 'prompt' | 'classify' | 'bash';
   name: string;
   displayName: string;
 }): React.ReactElement {
@@ -104,6 +109,7 @@ export function NodeLibrary({ commands, isLoading }: NodeLibraryProps): React.Re
   const showQuickNodes =
     !search.trim() ||
     'prompt'.includes(search.toLowerCase()) ||
+    'classify'.includes(search.toLowerCase()) ||
     'bash'.includes(search.toLowerCase());
 
   return (
@@ -131,8 +137,9 @@ export function NodeLibrary({ commands, isLoading }: NodeLibraryProps): React.Re
           <div className="flex flex-col gap-2 p-2">
             {/* Quick Nodes */}
             {showQuickNodes && (
-              <CollapsibleSection title="Quick Nodes" count={2} defaultOpen>
+              <CollapsibleSection title="Quick Nodes" count={3} defaultOpen>
                 <DraggableItem type="prompt" name="Prompt" displayName="Prompt" />
+                <DraggableItem type="classify" name="Classifier" displayName="Classifier" />
                 <DraggableItem type="bash" name="Shell" displayName="Bash" />
               </CollapsibleSection>
             )}

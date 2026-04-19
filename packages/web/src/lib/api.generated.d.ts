@@ -2250,6 +2250,7 @@ export interface components {
       };
       command?: string;
       prompt?: string;
+      classify?: string;
       bash?: string;
       loop?: {
         prompt: string;

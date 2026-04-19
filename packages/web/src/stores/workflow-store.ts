@@ -255,6 +255,9 @@ export const useWorkflowStore = create<WorkflowStoreState>()(
                 duration: event.duration,
                 error: event.error,
                 reason: event.reason,
+                resolvedPrompt:
+                  event.resolvedPrompt ??
+                  (existingIdx >= 0 ? dagNodes[existingIdx].resolvedPrompt : undefined),
               };
 
               if (existingIdx >= 0) {
@@ -298,6 +301,7 @@ export const useWorkflowStore = create<WorkflowStoreState>()(
                 currentIteration: event.iteration,
                 maxIterations: event.total > 0 ? event.total : existing.maxIterations,
                 iterations,
+                resolvedPrompt: event.resolvedPrompt ?? existing.resolvedPrompt,
               };
               return { ...wf, dagNodes };
             }),

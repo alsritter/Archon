@@ -4,18 +4,18 @@ import { WorkflowList } from '@/components/workflows/WorkflowList';
 
 export function WorkflowsPage(): React.ReactElement {
   return (
-    <div className="flex flex-1 flex-col overflow-hidden">
-      <div className="flex items-center justify-between px-4 pt-4 pb-2">
+    <div className="flex flex-1 flex-col overflow-auto md:overflow-hidden">
+      <div className="flex items-center justify-between gap-3 px-4 pt-4 pb-2">
         <h1 className="text-lg font-semibold text-text-primary">Workflows</h1>
         <Link
           to="/workflows/builder"
-          className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white hover:bg-primary/90 transition-colors"
+          className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white hover:bg-primary/90 transition-colors"
         >
           <Plus className="size-4" />
           New Workflow
         </Link>
       </div>
-      <div className="flex-1 overflow-hidden px-4 pb-0 pt-2">
+      <div className="flex-1 overflow-visible px-4 pb-4 pt-2 md:overflow-hidden md:pb-0">
         <WorkflowList />
       </div>
     </div>

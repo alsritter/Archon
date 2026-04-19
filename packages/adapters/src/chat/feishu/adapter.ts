@@ -390,11 +390,25 @@ function renderSystemCard(message: string, metadata?: MessageMetadata): Rendered
     };
   }
 
+  if (metadata?.category === 'workflow_status') {
+    return {
+      title: metadata.nodeName
+        ? metadata.nodeName
+        : metadata.workflowRun?.workflowName
+          ? `Workflow · ${metadata.workflowRun.workflowName}`
+          : 'Workflow update',
+      template: 'blue',
+      body: message,
+    };
+  }
+
   if (metadata?.category === 'workflow_dispatch_status') {
     return {
-      title: metadata.workflowDispatch?.workflowName
-        ? `Starting workflow · ${metadata.workflowDispatch.workflowName}`
-        : 'Starting workflow',
+      title: metadata.nodeName
+        ? metadata.nodeName
+        : metadata.workflowDispatch?.workflowName
+          ? `Starting workflow · ${metadata.workflowDispatch.workflowName}`
+          : 'Starting workflow',
       template: 'blue',
       body: message,
     };
@@ -404,7 +418,7 @@ function renderSystemCard(message: string, metadata?: MessageMetadata): Rendered
     const runId = extractInlineCodeValue('Run ID', message);
     const interactionMode = inferApprovalInteractionMode(message);
     return {
-      title: 'Approval required',
+      title: metadata.nodeName || 'Approval required',
       template: 'orange',
       body: message,
       note:
@@ -610,7 +624,7 @@ export class FeishuAdapter implements IPlatformAdapter {
         const result = await this.sendInteractiveCard(
           conversationId,
           {
-            title: 'Assistant reply',
+            title: metadata?.nodeName || 'Assistant reply',
             template: 'grey',
             body: stripDecorators(message),
           },
@@ -895,7 +909,7 @@ export class FeishuAdapter implements IPlatformAdapter {
   private toProgressEmoji(state: FeishuProgressState): string {
     switch (state) {
       case 'received':
-        return 'EYES';
+        return 'OnIt';
       case 'running':
         return 'Typing';
       case 'done':

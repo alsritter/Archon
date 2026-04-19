@@ -41,15 +41,15 @@ export function StatusSummaryBar({
   health,
 }: StatusSummaryBarProps): React.ReactElement {
   return (
-    <div className="rounded-lg border border-border bg-surface p-4 space-y-3">
+    <div className="rounded-lg border border-border bg-surface p-3 sm:p-4 space-y-3">
       {/* Row 1: Status chips */}
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1 sm:mx-0 sm:flex-wrap sm:px-0 sm:pb-0">
         <button
           onClick={(): void => {
             onFilterChange(null);
           }}
           className={cn(
-            'rounded-full px-3 py-1 text-xs font-medium transition-colors',
+            'shrink-0 rounded-full px-3 py-1 text-xs font-medium transition-colors',
             activeFilter === null
               ? 'bg-primary/10 text-primary border border-primary'
               : 'bg-surface-elevated text-text-secondary border border-border hover:border-text-tertiary'
@@ -67,7 +67,7 @@ export function StatusSummaryBar({
                 onFilterChange(isActive ? null : status);
               }}
               className={cn(
-                'rounded-full px-3 py-1 text-xs font-medium transition-colors',
+                'shrink-0 rounded-full px-3 py-1 text-xs font-medium transition-colors',
                 isActive
                   ? 'bg-primary/10 text-primary border border-primary'
                   : 'bg-surface-elevated text-text-secondary border border-border hover:border-text-tertiary',
@@ -81,13 +81,13 @@ export function StatusSummaryBar({
       </div>
 
       {/* Row 2: Project dropdown, date range, search, capacity */}
-      <div className="flex flex-wrap items-center gap-3">
+      <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-3">
         <select
           value={projectFilter ?? ''}
           onChange={(e): void => {
             onProjectFilterChange(e.target.value || null);
           }}
-          className="rounded-md border border-border bg-surface-elevated px-2 py-1.5 text-xs text-text-primary focus:border-primary focus:outline-none"
+          className="w-full rounded-md border border-border bg-surface-elevated px-2 py-1.5 text-xs text-text-primary focus:border-primary focus:outline-none sm:w-auto"
         >
           <option value="">All Projects</option>
           {codebases?.map(cb => (
@@ -102,7 +102,7 @@ export function StatusSummaryBar({
           onChange={(e): void => {
             onDateRangeChange(e.target.value as DateRange);
           }}
-          className="rounded-md border border-border bg-surface-elevated px-2 py-1.5 text-xs text-text-primary focus:border-primary focus:outline-none"
+          className="w-full rounded-md border border-border bg-surface-elevated px-2 py-1.5 text-xs text-text-primary focus:border-primary focus:outline-none sm:w-auto"
         >
           {DATE_RANGE_OPTIONS.map(opt => (
             <option key={opt.value} value={opt.value}>
@@ -111,7 +111,7 @@ export function StatusSummaryBar({
           ))}
         </select>
 
-        <div className="relative flex-1 min-w-[180px]">
+        <div className="relative w-full sm:min-w-[220px] sm:flex-1">
           <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-tertiary" />
           <input
             type="text"
@@ -125,7 +125,7 @@ export function StatusSummaryBar({
         </div>
 
         {health && (
-          <span className="text-xs text-text-tertiary shrink-0">
+          <span className="text-xs text-text-tertiary sm:ml-auto sm:shrink-0">
             Capacity: {String(health.concurrency.active)}/{String(health.concurrency.maxConcurrent)}{' '}
             active
           </span>

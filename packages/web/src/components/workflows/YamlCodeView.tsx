@@ -76,6 +76,9 @@ function serializeDagNode(node: DagNode, baseIndent: number): string {
   if ('prompt' in node && node.prompt) {
     lines.push(`${pad}  prompt: ${serializeValue(node.prompt, baseIndent + 2)}`);
   }
+  if ('classify' in node && node.classify) {
+    lines.push(`${pad}  classify: ${serializeValue(node.classify, baseIndent + 2)}`);
+  }
   if ('bash' in node && node.bash) {
     lines.push(`${pad}  bash: ${serializeValue(node.bash, baseIndent + 2)}`);
   }

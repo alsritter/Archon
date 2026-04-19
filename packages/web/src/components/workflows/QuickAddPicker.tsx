@@ -8,7 +8,7 @@ import { CommandPicker } from './CommandPicker';
 interface QuickAddPickerProps {
   position: { x: number; y: number };
   onAddNode: (
-    type: 'command' | 'prompt' | 'bash',
+    type: 'command' | 'prompt' | 'classify' | 'bash',
     options?: { commandName?: string; skills?: string[]; mcp?: string }
   ) => void;
   onClose: () => void;
@@ -176,6 +176,23 @@ export function QuickAddPicker({
           <div className="flex-1 min-w-0">
             <div className="text-xs font-medium text-text-primary">Prompt</div>
             <div className="text-[10px] text-text-tertiary">Inline AI prompt</div>
+          </div>
+        </button>
+
+        {/* Classify */}
+        <button
+          type="button"
+          onClick={(): void => {
+            onAddNode('classify');
+          }}
+          className="w-full flex items-center gap-2.5 px-3 py-2 text-left transition-colors hover:bg-surface-hover cursor-pointer"
+        >
+          <span className="text-text-secondary">
+            <FileText className="size-4" />
+          </span>
+          <div className="flex-1 min-w-0">
+            <div className="text-xs font-medium text-text-primary">Classify</div>
+            <div className="text-[10px] text-text-tertiary">Structured routing/classification</div>
           </div>
         </button>
 

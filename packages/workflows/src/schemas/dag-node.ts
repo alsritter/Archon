@@ -2,8 +2,9 @@
  * Zod schemas for DAG node types.
  *
  * Design: a flat "raw" schema validates all fields (with mutual exclusivity enforced via
- * superRefine), then a transform produces one of the six concrete variant types
- * (CommandNode, PromptNode, BashNode, LoopNode, ApprovalNode, CancelNode) as the DagNode union.
+ * superRefine), then a transform produces one of the concrete variant types
+ * (CommandNode, PromptNode, ClassifyNode, BashNode, LoopNode, ApprovalNode, CancelNode, ScriptNode)
+ * as the DagNode union.
  * Per-variant schemas (commandNodeSchema etc.) are exported for type derivation only —
  * use dagNodeSchema for validation.
  *
@@ -165,6 +166,25 @@ export const promptNodeSchema = dagNodeBaseSchema.extend({
 /** DAG node with an inline prompt (no command file) */
 export type PromptNode = z.infer<typeof promptNodeSchema> & {
   command?: never;
+  classify?: never;
+  bash?: never;
+  loop?: never;
+  approval?: never;
+  cancel?: never;
+  script?: never;
+};
+
+export const classifyNodeSchema = dagNodeBaseSchema
+  .extend({
+    classify: z.string(),
+    output_format: z.record(z.unknown()),
+  })
+  .openapi('ClassifyNode');
+
+/** DAG node specialized for deterministic classification and routing tasks */
+export type ClassifyNode = z.infer<typeof classifyNodeSchema> & {
+  command?: never;
+  prompt?: never;
   bash?: never;
   loop?: never;
   approval?: never;
@@ -185,6 +205,7 @@ export const bashNodeSchema = dagNodeBaseSchema.extend({
 export type BashNode = z.infer<typeof bashNodeSchema> & {
   command?: never;
   prompt?: never;
+  classify?: never;
   loop?: never;
   approval?: never;
   cancel?: never;
@@ -207,6 +228,7 @@ export const scriptNodeSchema = dagNodeBaseSchema.extend({
 export type ScriptNode = z.infer<typeof scriptNodeSchema> & {
   command?: never;
   prompt?: never;
+  classify?: never;
   bash?: never;
   loop?: never;
   approval?: never;
@@ -226,6 +248,7 @@ export const loopNodeSchema = dagNodeBaseSchema.extend({
 export type LoopNode = z.infer<typeof loopNodeSchema> & {
   command?: never;
   prompt?: never;
+  classify?: never;
   bash?: never;
   approval?: never;
   cancel?: never;
@@ -256,6 +279,7 @@ export const approvalNodeSchema = dagNodeBaseSchema.extend({
 export type ApprovalNode = z.infer<typeof approvalNodeSchema> & {
   command?: never;
   prompt?: never;
+  classify?: never;
   bash?: never;
   loop?: never;
   cancel?: never;
@@ -274,16 +298,18 @@ export const cancelNodeSchema = dagNodeBaseSchema.extend({
 export type CancelNode = z.infer<typeof cancelNodeSchema> & {
   command?: never;
   prompt?: never;
+  classify?: never;
   bash?: never;
   loop?: never;
   approval?: never;
   script?: never;
 };
 
-/** A single node in a DAG workflow. command, prompt, bash, loop, approval, cancel, and script are mutually exclusive. */
+/** A single node in a DAG workflow. command, prompt, classify, bash, loop, approval, cancel, and script are mutually exclusive. */
 export type DagNode =
   | CommandNode
   | PromptNode
+  | ClassifyNode
   | BashNode
   | LoopNode
   | ApprovalNode
@@ -335,7 +361,7 @@ export const LOOP_NODE_AI_FIELDS: readonly string[] = BASH_NODE_AI_FIELDS.filter
  *
  * Enforces:
  * - Non-empty id
- * - Exactly one of command/prompt/bash/loop (mutual exclusivity)
+ * - Exactly one of command/prompt/classify/bash/loop (mutual exclusivity)
  * - command name validity (via isValidCommandName)
  * - Model/provider compatibility (via isModelCompatible)
  * - idle_timeout must be a finite positive number
@@ -347,6 +373,7 @@ export const dagNodeSchema = dagNodeBaseSchema
     // Mode fields (exactly one required)
     command: z.string().optional(),
     prompt: z.string().optional(),
+    classify: z.string().optional(),
     bash: z.string().optional(),
     loop: loopNodeConfigSchema.optional(),
     approval: z
@@ -379,6 +406,7 @@ export const dagNodeSchema = dagNodeBaseSchema
 
     const hasCommand = typeof data.command === 'string' && data.command.trim().length > 0;
     const hasPrompt = typeof data.prompt === 'string' && data.prompt.trim().length > 0;
+    const hasClassify = typeof data.classify === 'string' && data.classify.trim().length > 0;
     const hasBash = typeof data.bash === 'string' && data.bash.trim().length > 0;
     const hasLoop = data.loop !== undefined;
     const hasApproval = data.approval !== undefined;
@@ -388,6 +416,7 @@ export const dagNodeSchema = dagNodeBaseSchema
     const modeCount = [
       hasCommand,
       hasPrompt,
+      hasClassify,
       hasBash,
       hasLoop,
       hasApproval,
@@ -399,7 +428,7 @@ export const dagNodeSchema = dagNodeBaseSchema
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message:
-          "'command', 'prompt', 'bash', 'loop', 'approval', 'cancel', and 'script' are mutually exclusive",
+          "'command', 'prompt', 'classify', 'bash', 'loop', 'approval', 'cancel', and 'script' are mutually exclusive",
       });
       return z.NEVER;
     }
@@ -420,6 +449,14 @@ export const dagNodeSchema = dagNodeBaseSchema
         });
         return z.NEVER;
       }
+      if (typeof data.classify === 'string') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'classify prompt cannot be empty',
+          path: ['classify'],
+        });
+        return z.NEVER;
+      }
       if (typeof data.script === 'string') {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
@@ -431,9 +468,17 @@ export const dagNodeSchema = dagNodeBaseSchema
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message:
-          "must have either 'command', 'prompt', 'bash', 'loop', 'approval', 'cancel', or 'script'",
+          "must have either 'command', 'prompt', 'classify', 'bash', 'loop', 'approval', 'cancel', or 'script'",
       });
       return z.NEVER;
+    }
+
+    if (hasClassify && data.output_format === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "'output_format' is required for classify nodes",
+        path: ['output_format'],
+      });
     }
 
     // Command name validation
@@ -558,6 +603,9 @@ export const dagNodeSchema = dagNodeBaseSchema
     if (data.prompt !== undefined && data.prompt.trim().length > 0) {
       return { ...base, ...shared, ...aiOnly, prompt: data.prompt.trim() } as PromptNode;
     }
+    if (data.classify !== undefined && data.classify.trim().length > 0) {
+      return { ...base, ...shared, ...aiOnly, classify: data.classify.trim() } as ClassifyNode;
+    }
     if (data.bash !== undefined && data.bash.trim().length > 0) {
       return {
         ...base,
@@ -597,6 +645,11 @@ export const dagNodeSchema = dagNodeBaseSchema
 /** Type guard: check if a DAG node is a bash (shell script) node */
 export function isBashNode(node: DagNode): node is BashNode {
   return 'bash' in node && typeof node.bash === 'string';
+}
+
+/** Type guard: check if a DAG node is a classify node */
+export function isClassifyNode(node: DagNode): node is ClassifyNode {
+  return 'classify' in node && typeof node.classify === 'string';
 }
 
 /** Type guard: check if a DAG node is a loop (iterative) node */

@@ -2,7 +2,7 @@
  * Workflow loader - discovers and parses workflow YAML files
  */
 import type { WorkflowDefinition, WorkflowLoadError, DagNode, WorkflowNodeHooks } from './schemas';
-import { isLoopNode, isApprovalNode, isCancelNode, isScriptNode } from './schemas';
+import { isLoopNode, isApprovalNode, isCancelNode, isScriptNode, isClassifyNode } from './schemas';
 import { createLogger } from '@archon/paths';
 import { isModelCompatible } from './model-validation';
 import {
@@ -150,6 +150,7 @@ function validateDagStructure(nodes: DagNode[]): string | null {
     const sources: string[] = [];
     if (node.when) sources.push(node.when);
     if ('prompt' in node && typeof node.prompt === 'string') sources.push(node.prompt);
+    if (isClassifyNode(node)) sources.push(node.classify);
     if (isLoopNode(node)) {
       sources.push(node.loop.prompt);
     }

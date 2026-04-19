@@ -19,13 +19,37 @@ import type {
 import type { CommandEntry, DagNode } from '@/lib/api';
 import { dagNodeComponent, type DagFlowNode } from './DagNodeComponent';
 import { QuickAddPicker } from './QuickAddPicker';
+import type { DagEdgeData } from '@/lib/dag-layout';
 
 export { dagNodesToReactFlow } from '@/lib/dag-layout';
 
-function resolveNodeLabel(nodeType: 'command' | 'prompt' | 'bash', commandName: string): string {
+function resolveNodeLabel(
+  nodeType: 'command' | 'prompt' | 'classify' | 'bash',
+  commandName: string
+): string {
   if (nodeType === 'command') return commandName;
   if (nodeType === 'bash') return 'Shell';
+  if (nodeType === 'classify') return 'Classifier';
   return 'Prompt';
+}
+
+function getCommandPreview(
+  commands: CommandEntry[],
+  commandName: string | undefined
+): string | undefined {
+  if (!commandName) return undefined;
+  return commands.find(command => command.name === commandName)?.preview;
+}
+
+function getDefaultClassifyOutputFormat(): Record<string, unknown> {
+  return {
+    type: 'object',
+    properties: {
+      label: { type: 'string' },
+      rationale: { type: 'string' },
+    },
+    required: ['label'],
+  };
 }
 
 export function reactFlowToDagNodes(rfNodes: DagFlowNode[], rfEdges: Edge[]): DagNode[] {
@@ -39,16 +63,7 @@ export function reactFlowToDagNodes(rfNodes: DagFlowNode[], rfEdges: Edge[]): Da
       trigger_rule: node.data.trigger_rule || undefined,
     };
 
-    if (node.data.nodeType === 'bash') {
-      // DagNode uses `never` discriminant fields that can't be set on object literals
-      return {
-        ...dagBase,
-        bash: node.data.bashScript ?? '',
-        ...(node.data.bashTimeout ? { timeout: node.data.bashTimeout } : {}),
-      } as DagNode;
-    }
-
-    // AI node fields (not applicable to bash)
+    // AI node fields (not applicable to bash/script/approval)
     const aiBase = {
       ...dagBase,
       model: node.data.model || undefined,
@@ -62,9 +77,64 @@ export function reactFlowToDagNodes(rfNodes: DagFlowNode[], rfEdges: Edge[]): Da
       skills: node.data.skills ?? undefined,
     };
 
+    if (node.data.nodeType === 'bash') {
+      // DagNode uses `never` discriminant fields that can't be set on object literals
+      return {
+        ...dagBase,
+        bash: node.data.bashScript ?? '',
+        ...(node.data.bashTimeout ? { timeout: node.data.bashTimeout } : {}),
+      } as DagNode;
+    }
+
+    if (node.data.nodeType === 'script') {
+      return {
+        ...dagBase,
+        script: node.data.bashScript ?? '',
+        runtime: node.data.runtime === 'uv' ? 'uv' : 'bun',
+        ...(node.data.bashTimeout ? { timeout: node.data.bashTimeout } : {}),
+        ...(Array.isArray(node.data.deps) && node.data.deps.length > 0
+          ? { deps: node.data.deps }
+          : {}),
+      } as DagNode;
+    }
+
+    if (node.data.nodeType === 'approval') {
+      const approval = node.data.approval ?? {
+        message: typeof node.data.promptText === 'string' ? node.data.promptText : '',
+      };
+      return {
+        ...dagBase,
+        approval,
+      } as DagNode;
+    }
+
+    if (node.data.nodeType === 'loop') {
+      const loop = node.data.loop ?? {
+        prompt: typeof node.data.promptText === 'string' ? node.data.promptText : '',
+        until: '',
+        max_iterations: 1,
+        fresh_context: false,
+      };
+      return {
+        ...aiBase,
+        loop,
+      } as DagNode;
+    }
+
     // DagNode uses `never` discriminant fields that can't be set on object literals
     if (node.data.nodeType === 'command') {
-      return { ...aiBase, command: node.data.label } as DagNode;
+      return {
+        ...aiBase,
+        command:
+          node.data.label || (typeof node.data.command === 'string' ? node.data.command : ''),
+      } as DagNode;
+    }
+    if (node.data.nodeType === 'classify') {
+      const classifyText = node.data.promptText;
+      return {
+        ...aiBase,
+        classify: typeof classifyText === 'string' ? classifyText : '',
+      } as DagNode;
     }
     const promptText = node.data.promptText;
     return {
@@ -85,6 +155,7 @@ interface WorkflowCanvasProps {
   onDirty: () => void;
   onPushSnapshot?: () => void;
   commands: CommandEntry[];
+  isMobile?: boolean;
 }
 
 interface QuickAddPosition {
@@ -103,6 +174,7 @@ export function WorkflowCanvas({
   onDirty,
   onPushSnapshot,
   commands,
+  isMobile = false,
 }: WorkflowCanvasProps): React.ReactElement {
   const { screenToFlowPosition } = useReactFlow();
   const [quickAddPosition, setQuickAddPosition] = useState<QuickAddPosition | null>(null);
@@ -113,17 +185,20 @@ export function WorkflowCanvas({
   const styledEdges = useMemo(
     () =>
       edges.map(edge => {
-        const targetNode = nodes.find(n => n.id === edge.target);
-        if (targetNode?.data.when) {
+        const data = edge.data as DagEdgeData | undefined;
+        if (data?.isCondition) {
           return {
             ...edge,
             style: { stroke: 'var(--node-prompt)', strokeDasharray: '6 4' },
-            type: 'smoothstep' as const,
+            type: 'simplebezier' as const,
+            label: 'when',
+            labelStyle: { fill: 'var(--node-prompt)', fontSize: 10, fontWeight: 600 },
+            labelBgStyle: { fill: 'var(--surface)', fillOpacity: 0.9 },
           };
         }
         return { ...edge, type: 'smoothstep' as const };
       }),
-    [edges, nodes]
+    [edges]
   );
 
   const onConnect: OnConnect = useCallback(
@@ -150,7 +225,7 @@ export function WorkflowCanvas({
       const position = screenToFlowPosition({ x: e.clientX, y: e.clientY });
       const id = `node-${crypto.randomUUID()}`;
 
-      const nodeType = type as 'command' | 'prompt' | 'bash';
+      const nodeType = type as 'command' | 'prompt' | 'classify' | 'bash';
       const label = resolveNodeLabel(nodeType, command);
 
       const newNode: DagFlowNode = {
@@ -161,6 +236,12 @@ export function WorkflowCanvas({
           id,
           label,
           nodeType,
+          ...(nodeType === 'command'
+            ? { commandPreview: getCommandPreview(commands, command) }
+            : {}),
+          ...(nodeType === 'classify'
+            ? { output_format: getDefaultClassifyOutputFormat(), promptText: '' }
+            : {}),
         },
       };
 
@@ -257,7 +338,7 @@ export function WorkflowCanvas({
 
   const handleQuickAddNode = useCallback(
     (
-      type: 'command' | 'prompt' | 'bash',
+      type: 'command' | 'prompt' | 'classify' | 'bash',
       options?: { commandName?: string; skills?: string[]; mcp?: string }
     ) => {
       if (!quickAddPosition) return;
@@ -273,6 +354,12 @@ export function WorkflowCanvas({
           id,
           label,
           nodeType: type,
+          ...(type === 'command'
+            ? { commandPreview: getCommandPreview(commands, options?.commandName) }
+            : {}),
+          ...(type === 'classify'
+            ? { output_format: getDefaultClassifyOutputFormat(), promptText: '' }
+            : {}),
           ...(options?.skills && { skills: options.skills }),
           ...(options?.mcp && { mcp: options.mcp }),
         },
@@ -311,7 +398,9 @@ export function WorkflowCanvas({
         className="bg-background"
       >
         <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="var(--border)" />
-        <MiniMap className="!bg-surface !border-border" maskColor="rgba(0,0,0,0.6)" />
+        {!isMobile && (
+          <MiniMap className="!bg-surface !border-border" maskColor="rgba(0,0,0,0.6)" />
+        )}
         <Controls />
       </ReactFlow>
 

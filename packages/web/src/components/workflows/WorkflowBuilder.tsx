@@ -29,6 +29,7 @@ import { ValidationPanel } from './ValidationPanel';
 import { StatusBar } from './StatusBar';
 import { YamlCodeView } from './YamlCodeView';
 import type { DagNodeData, DagFlowNode } from './DagNodeComponent';
+import { Button } from '@/components/ui/button';
 
 const NODE_LIBRARY_WIDTH_KEY = 'archon:nodeLibraryWidth';
 const NODE_LIBRARY_MIN_WIDTH = 160;
@@ -134,7 +135,15 @@ function WorkflowBuilderInner(): React.ReactElement {
 
   const [yamlViewMode, setYamlViewMode] = useState<ViewMode>('hidden');
   const [validationPanelOpen, setValidationPanelOpen] = useState(false);
-  const [showLibrary, setShowLibrary] = useState(true);
+  const [showLibrary, setShowLibrary] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return true;
+    return !window.matchMedia('(max-width: 767px)').matches;
+  });
+  const [showMobileInspector, setShowMobileInspector] = useState(false);
+  const [isMobile, setIsMobile] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.matchMedia('(max-width: 767px)').matches;
+  });
 
   // DAG state
   const [nodes, setNodes, onNodesChange] = useNodesState<DagFlowNode>([]);
@@ -154,6 +163,10 @@ function WorkflowBuilderInner(): React.ReactElement {
     queryFn: () => listCommands(cwd),
   });
   const commandList: CommandEntry[] = commands ?? [];
+  const commandPreviewMap = useMemo(
+    () => new Map(commandList.map(command => [command.name, command.preview])),
+    [commandList]
+  );
 
   const { pushSnapshot, undo, redo } = useBuilderUndo();
   const { zoom } = useViewport();
@@ -195,7 +208,9 @@ function WorkflowBuilderInner(): React.ReactElement {
         setModel(workflow.model);
         setValidationErrors([]);
 
-        const { nodes: rfNodes, edges: rfEdges } = dagNodesToReactFlow(workflow.nodes);
+        const { nodes: rfNodes, edges: rfEdges } = dagNodesToReactFlow(workflow.nodes, {
+          hideTransitiveEdges: true,
+        });
         setNodes(rfNodes);
         setEdges(rfEdges);
 
@@ -221,6 +236,55 @@ function WorkflowBuilderInner(): React.ReactElement {
       void loadWorkflow(editName);
     }
   }, [editName, loadWorkflow]);
+
+  useEffect(() => {
+    if (commandPreviewMap.size === 0) return;
+
+    setNodes(currentNodes =>
+      currentNodes.map(node => {
+        if (node.data.nodeType !== 'command') return node;
+        const commandName =
+          node.data.label || (typeof node.data.command === 'string' ? node.data.command : '');
+        const commandPreview = commandPreviewMap.get(commandName);
+        if (commandPreview === undefined || node.data.commandPreview === commandPreview)
+          return node;
+        return {
+          ...node,
+          data: {
+            ...node.data,
+            commandPreview,
+          },
+        };
+      })
+    );
+  }, [commandPreviewMap, setNodes]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const mediaQuery = window.matchMedia('(max-width: 767px)');
+    const handleChange = (event: MediaQueryListEvent): void => {
+      setIsMobile(event.matches);
+      setShowLibrary(!event.matches);
+      if (!event.matches) {
+        setShowMobileInspector(false);
+      }
+    };
+    setIsMobile(mediaQuery.matches);
+    mediaQuery.addEventListener('change', handleChange);
+    return (): void => {
+      mediaQuery.removeEventListener('change', handleChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!selectedNodeId) {
+      setShowMobileInspector(false);
+      return;
+    }
+    if (isMobile) {
+      setShowMobileInspector(true);
+    }
+  }, [selectedNodeId, isMobile]);
 
   const handleToggleValidationPanel = useCallback((): void => {
     setValidationPanelOpen(v => !v);
@@ -415,9 +479,14 @@ function WorkflowBuilderInner(): React.ReactElement {
   useBuilderKeyboard(keyboardActions, true);
 
   const selectedNode = selectedNodeId ? nodes.find(n => n.id === selectedNodeId) : null;
+  const showDesktopInspector =
+    !isMobile && selectedNodeId && selectedNode && yamlViewMode !== 'full';
+  const showMobileLibrary = isMobile && showLibrary;
+  const showMobileInspectorPanel =
+    isMobile && showMobileInspector && selectedNodeId && selectedNode && yamlViewMode !== 'full';
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="relative flex h-full flex-col">
       <BuilderToolbar
         workflowName={workflowName}
         workflowDescription={workflowDescription}
@@ -455,6 +524,7 @@ function WorkflowBuilderInner(): React.ReactElement {
         onLoadWorkflow={(name): void => {
           void loadWorkflow(name);
         }}
+        isMobile={isMobile}
       />
 
       {commandsError && (
@@ -463,9 +533,44 @@ function WorkflowBuilderInner(): React.ReactElement {
         </div>
       )}
 
+      {isMobile && (
+        <div className="flex items-center gap-2 overflow-x-auto border-b border-border bg-surface px-3 py-2">
+          <Button
+            variant={showLibrary ? 'secondary' : 'outline'}
+            size="xs"
+            onClick={(): void => {
+              setShowLibrary(v => !v);
+            }}
+          >
+            Library
+          </Button>
+          <Button
+            variant={showMobileInspectorPanel ? 'secondary' : 'outline'}
+            size="xs"
+            onClick={(): void => {
+              if (selectedNodeId) {
+                setShowMobileInspector(v => !v);
+              }
+            }}
+            disabled={!selectedNodeId}
+          >
+            Inspector
+          </Button>
+          <Button
+            variant={validationPanelOpen ? 'secondary' : 'outline'}
+            size="xs"
+            onClick={handleToggleValidationPanel}
+          >
+            Problems
+          </Button>
+        </div>
+      )}
+
       <div className="flex flex-1 overflow-hidden">
         {/* Left panel: Node Library */}
-        {showLibrary && <NodeLibraryPanel commands={commandList} isLoading={commandsLoading} />}
+        {!isMobile && showLibrary && (
+          <NodeLibraryPanel commands={commandList} isLoading={commandsLoading} />
+        )}
 
         {/* Center area */}
         <div className="flex-1 relative overflow-hidden flex">
@@ -487,6 +592,7 @@ function WorkflowBuilderInner(): React.ReactElement {
                     pushSnapshot({ nodes, edges });
                   }}
                   commands={commandList}
+                  isMobile={isMobile}
                 />
               </div>
 
@@ -500,7 +606,7 @@ function WorkflowBuilderInner(): React.ReactElement {
         </div>
 
         {/* Right panel: Node Inspector */}
-        {selectedNodeId && selectedNode && yamlViewMode !== 'full' && (
+        {showDesktopInspector && (
           <div className="w-72 shrink-0">
             <NodeInspector
               node={selectedNode.data}
@@ -514,6 +620,60 @@ function WorkflowBuilderInner(): React.ReactElement {
           </div>
         )}
       </div>
+
+      {showMobileLibrary && (
+        <div className="absolute inset-x-0 top-0 bottom-7 z-20 flex bg-background/60 backdrop-blur-[1px]">
+          <div className="h-full w-[85vw] max-w-xs border-r border-border shadow-2xl">
+            <NodeLibrary commands={commandList} isLoading={commandsLoading} />
+          </div>
+          <button
+            type="button"
+            className="flex-1"
+            aria-label="Close node library"
+            onClick={(): void => {
+              setShowLibrary(false);
+            }}
+          />
+        </div>
+      )}
+
+      {showMobileInspectorPanel && selectedNode && (
+        <div className="absolute inset-x-0 bottom-7 top-0 z-20 flex items-end bg-background/50">
+          <button
+            type="button"
+            className="absolute inset-0"
+            aria-label="Close node inspector"
+            onClick={(): void => {
+              setShowMobileInspector(false);
+            }}
+          />
+          <div className="relative max-h-full w-full overflow-hidden rounded-t-xl border-t border-border bg-surface shadow-2xl">
+            <div className="flex items-center justify-between border-b border-border px-3 py-2">
+              <span className="text-sm font-medium text-text-primary">Node Inspector</span>
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                onClick={(): void => {
+                  setShowMobileInspector(false);
+                }}
+              >
+                x
+              </Button>
+            </div>
+            <div className="max-h-[60vh] overflow-auto">
+              <NodeInspector
+                node={selectedNode.data}
+                commands={commandList}
+                onUpdate={handleNodeUpdate}
+                onDelete={handleNodeDelete}
+                onClose={(): void => {
+                  setSelectedNodeId(null);
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Validation Panel */}
       <ValidationPanel

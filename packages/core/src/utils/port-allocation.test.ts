@@ -1,5 +1,6 @@
-import { describe, it, expect, afterEach } from 'bun:test';
-import { calculatePortOffset, getPort } from './port-allocation';
+import { describe, it, expect, afterEach, spyOn, type Mock } from 'bun:test';
+import * as git from '@archon/git';
+import { calculatePortOffset, findAvailablePort, getPort } from './port-allocation';
 
 // Test the exported hash calculation function directly
 describe('calculatePortOffset', () => {
@@ -47,8 +48,11 @@ describe('calculatePortOffset', () => {
 // Test getPort() behavior with mocked dependencies
 describe('getPort', () => {
   const originalEnv = process.env.PORT;
+  let isWorktreePathSpy: Mock<(path: string) => Promise<boolean>>;
 
   afterEach(() => {
+    isWorktreePathSpy?.mockRestore();
+
     if (originalEnv === undefined) {
       delete process.env.PORT;
     } else {
@@ -64,6 +68,7 @@ describe('getPort', () => {
 
   it('should return a valid port when no PORT env is set', async () => {
     delete process.env.PORT;
+    isWorktreePathSpy = spyOn(git, 'isWorktreePath').mockResolvedValue(false);
     // Note: If running in a worktree, port will be auto-allocated (base 3090 + offset 100-999)
     // If running in main repo, port will be 3090
     const port = await getPort();
@@ -71,6 +76,24 @@ describe('getPort', () => {
     const maxPort = basePort + 999;
     expect(port).toBeGreaterThanOrEqual(basePort);
     expect(port).toBeLessThanOrEqual(maxPort);
+  });
+});
+
+describe('findAvailablePort', () => {
+  it('should return preferred port when available', async () => {
+    const port = await findAvailablePort(3090, 3, async candidatePort => candidatePort === 3090);
+    expect(port).toBe(3090);
+  });
+
+  it('should advance to next available port when preferred port is occupied', async () => {
+    const port = await findAvailablePort(3090, 3, async candidatePort => candidatePort === 3091);
+    expect(port).toBe(3091);
+  });
+
+  it('should throw when no candidate port is available within maxAttempts', async () => {
+    await expect(findAvailablePort(3090, 2, async () => false)).rejects.toThrow(
+      'No available port found starting at 3090 after 2 attempts'
+    );
   });
 });
 

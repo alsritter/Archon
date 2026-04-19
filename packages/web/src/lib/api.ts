@@ -19,6 +19,19 @@ export const SSE_BASE_URL = import.meta.env.DEV
   ? `http://${window.location.hostname}:${apiPort}`
   : '';
 
+let authRedirectInFlight = false;
+
+function redirectToLogin(): void {
+  if (typeof window === 'undefined' || authRedirectInFlight) {
+    return;
+  }
+
+  authRedirectInFlight = true;
+  const currentUrl = window.location.href;
+  const loginBase = import.meta.env.DEV ? SSE_BASE_URL : '';
+  window.location.assign(`${loginBase}/login?rd=${encodeURIComponent(currentUrl)}`);
+}
+
 export { getCodebaseInput } from '@/lib/codebase-input';
 
 export interface ConversationResponse {
@@ -61,6 +74,9 @@ export interface HealthResponse {
 async function fetchJSON<T>(url: string, options?: RequestInit): Promise<T> {
   const res = await fetch(url, options);
   if (!res.ok) {
+    if (res.status === 401) {
+      redirectToLogin();
+    }
     const body = await res.text();
     const truncated = body.length > 200 ? body.slice(0, 200) + '...' : body;
     const path = new URL(url, window.location.origin).pathname;
@@ -223,6 +239,8 @@ export interface WorkflowRunResponse {
   started_at: string;
   completed_at: string | null;
   last_activity_at: string | null;
+  is_stale?: boolean;
+  stale_reason?: string | null;
   worker_platform_id?: string;
   parent_platform_id?: string;
   conversation_platform_id?: string;
@@ -358,6 +376,14 @@ export async function approveWorkflowRun(
   });
 }
 
+export async function approveAndResumeWorkflowRun(
+  runId: string,
+  comment?: string
+): Promise<{ success: boolean; message: string }> {
+  await approveWorkflowRun(runId, comment);
+  return resumeWorkflowRun(runId);
+}
+
 export async function rejectWorkflowRun(
   runId: string,
   reason?: string
@@ -456,6 +482,7 @@ export async function validateWorkflow(
 export interface CommandEntry {
   name: string;
   source: WorkflowSource;
+  preview?: string;
 }
 
 export async function listCommands(cwd?: string): Promise<CommandEntry[]> {

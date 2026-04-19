@@ -57,13 +57,28 @@ function getInstantIssues(
         suggestion: 'Enter a bash script for this node',
       });
     }
-    if (node.data.nodeType === 'prompt' && !node.data.promptText?.trim()) {
+    if (
+      (node.data.nodeType === 'prompt' || node.data.nodeType === 'classify') &&
+      !node.data.promptText?.trim()
+    ) {
       issues.push({
         severity: 'error',
-        message: `Node "${node.data.id}": prompt cannot be empty`,
+        message: `Node "${node.data.id}": ${node.data.nodeType === 'classify' ? 'classify instructions' : 'prompt'} cannot be empty`,
         nodeId: node.data.id,
         field: 'promptText',
-        suggestion: 'Enter a prompt for this node',
+        suggestion:
+          node.data.nodeType === 'classify'
+            ? 'Enter classification instructions for this node'
+            : 'Enter a prompt for this node',
+      });
+    }
+    if (node.data.nodeType === 'classify' && !node.data.output_format) {
+      issues.push({
+        severity: 'error',
+        message: `Node "${node.data.id}": classify nodes require output_format`,
+        nodeId: node.data.id,
+        field: 'output_format',
+        suggestion: 'Define a JSON schema for the classification result',
       });
     }
   }

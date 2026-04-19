@@ -20,7 +20,7 @@ export function NodePalette(): React.ReactElement {
 
   const onDragStart = (
     e: React.DragEvent,
-    type: 'command' | 'prompt' | 'bash',
+    type: 'command' | 'prompt' | 'classify' | 'bash',
     name: string
   ): void => {
     e.dataTransfer.setData('application/reactflow-type', type);
@@ -47,6 +47,18 @@ export function NodePalette(): React.ReactElement {
       >
         <span className="text-[10px] text-accent font-medium">PROMPT</span>
         <span>Inline prompt</span>
+      </div>
+
+      {/* Bash node */}
+      <div
+        draggable
+        onDragStart={(e): void => {
+          onDragStart(e, 'classify', 'Classifier');
+        }}
+        className="flex items-center gap-2 px-2 py-1.5 rounded-md border border-dashed border-border hover:border-accent hover:bg-accent/5 cursor-grab text-xs text-text-primary mb-1"
+      >
+        <span className="text-[10px] text-node-classify font-medium">CLASSIFY</span>
+        <span>Structured classifier</span>
       </div>
 
       {/* Bash node */}
