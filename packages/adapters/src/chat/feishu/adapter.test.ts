@@ -592,6 +592,31 @@ describe('FeishuAdapter', () => {
     expect(received).toEqual(['@AI 工作流助手 路径 /tmp/demo 先不用管']);
   });
 
+  test('receive event strips plain-text mention prefix for topic command without mentions metadata', async () => {
+    const adapter = new FeishuAdapter('app-id', 'app-secret');
+    const received: string[] = [];
+
+    adapter.onMessage(async ctx => {
+      received.push(ctx.message);
+    });
+
+    await adapter.start();
+    await registeredHandlers['im.message.receive_v1']?.({
+      sender: { sender_id: { open_id: 'ou_123' }, sender_type: 'user' },
+      message: {
+        message_id: 'om_topic_cmd_plain_1',
+        chat_id: 'oc_group_topic_plain_1',
+        chat_type: 'group',
+        message_type: 'text',
+        content: JSON.stringify({
+          text: '@AI 工作流助手 /topic run story-brainstorm-design 开始方案头脑风暴',
+        }),
+      },
+    });
+
+    expect(received).toEqual(['/topic run story-brainstorm-design 开始方案头脑风暴']);
+  });
+
   test('uses root_id as the stable topic key for group subtopics', async () => {
     const adapter = new FeishuAdapter('app-id', 'app-secret');
     const received: string[] = [];

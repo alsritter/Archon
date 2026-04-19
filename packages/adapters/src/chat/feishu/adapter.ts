@@ -106,6 +106,15 @@ function normalizeFeishuCommandText(
     return trimmed;
   }
 
+  // Some Feishu topic-creation messages arrive without mentions metadata but
+  // still include a plain-text leading @mention before the /topic command.
+  // Keep the fallback narrowly scoped to /topic so normal prose containing "/"
+  // is not reclassified as a slash command.
+  const topicFallbackMatch = /^@.+?\s+(\/topic\b.*)$/s.exec(trimmed);
+  if (topicFallbackMatch) {
+    return topicFallbackMatch[1].trim();
+  }
+
   if (!mentions?.length) {
     return trimmed;
   }
