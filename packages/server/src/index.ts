@@ -74,6 +74,12 @@ import { SSETransport } from './adapters/web/transport';
 import { WorkflowEventBridge } from './adapters/web/workflow-bridge';
 import { registerApiRoutes } from './routes/api';
 import {
+  createApiAuthMiddleware,
+  createPageAuthMiddleware,
+  registerWebAuthRoutes,
+  resolveWebAuthConfig,
+} from './auth/web-auth';
+import {
   handleMessage,
   pool,
   ConversationLockManager,
@@ -572,12 +578,16 @@ export async function startServer(opts: ServerOptions = {}): Promise<void> {
   // Setup Hono server
   const app = new OpenAPIHono({ defaultHook: validationErrorHook });
   const port = opts.port ?? (await getPort());
+  const webAuthConfig = resolveWebAuthConfig();
 
   // Global error handler for unhandled exceptions
   app.onError((err, c) => {
     getLog().error({ err, path: c.req.path, method: c.req.method }, 'unhandled_request_error');
     return c.json({ error: 'Internal server error' }, 500);
   });
+
+  registerWebAuthRoutes(app, webAuthConfig);
+  app.use('/api/*', createApiAuthMiddleware(webAuthConfig));
 
   // Register Web UI API routes
   registerApiRoutes(app, webAdapter, lockManager);
@@ -700,9 +710,12 @@ export async function startServer(opts: ServerOptions = {}): Promise<void> {
       getLog().warn({ webDistPath }, 'web_dist_not_found');
     }
 
+    app.use('/assets/*', createPageAuthMiddleware(webAuthConfig));
+    app.use('/favicon.png', createPageAuthMiddleware(webAuthConfig));
     app.use('/assets/*', serveStatic({ root: webDistPath }));
     app.use('/favicon.png', serveStatic({ root: webDistPath, path: 'favicon.png' }));
     // SPA fallback - serve index.html for unmatched routes (after all API routes)
+    app.use('*', createPageAuthMiddleware(webAuthConfig));
     app.get('*', serveStatic({ root: webDistPath, path: 'index.html' }));
   }
 
