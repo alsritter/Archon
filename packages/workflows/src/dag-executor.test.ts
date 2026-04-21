@@ -3344,6 +3344,61 @@ describe('executeDagWorkflow -- resume with priorCompletedNodes', () => {
       expect(mockSendQueryDag.mock.calls[1][2]).toBe('session-1');
     });
 
+    it('uses resume_prompt after the first loop iteration while preserving session threading', async () => {
+      let callCount = 0;
+      mockSendQueryDag.mockImplementation(function* () {
+        callCount++;
+        if (callCount >= 2) {
+          yield { type: 'assistant', content: '<promise>DONE</promise>' };
+        } else {
+          yield { type: 'assistant', content: 'Need another pass.' };
+        }
+        yield { type: 'result', sessionId: `session-${String(callCount)}` };
+      });
+
+      const mockDeps = createMockDeps();
+      const platform = createMockPlatform();
+      const workflowRun = makeWorkflowRun();
+
+      await executeDagWorkflow(
+        mockDeps,
+        platform,
+        'conv-dag',
+        testDir,
+        {
+          name: 'dag-loop-resume-prompt',
+          nodes: [
+            {
+              id: 'my-loop',
+              loop: {
+                prompt: 'FIRST PROMPT with full background.',
+                resume_prompt: 'RESUME PROMPT with lightweight continuation.',
+                until: 'DONE',
+                max_iterations: 5,
+                fresh_context: false,
+              },
+            },
+          ],
+        },
+        workflowRun,
+        'claude',
+        undefined,
+        join(testDir, 'artifacts'),
+        join(testDir, 'logs'),
+        'main',
+        'docs/',
+        minimalConfig
+      );
+
+      expect(mockSendQueryDag.mock.calls.length).toBe(2);
+      expect(mockSendQueryDag.mock.calls[0][0]).toContain('FIRST PROMPT');
+      expect(mockSendQueryDag.mock.calls[0][0]).not.toContain('RESUME PROMPT');
+      expect(mockSendQueryDag.mock.calls[0][2]).toBeUndefined();
+      expect(mockSendQueryDag.mock.calls[1][0]).toContain('RESUME PROMPT');
+      expect(mockSendQueryDag.mock.calls[1][0]).not.toContain('FIRST PROMPT');
+      expect(mockSendQueryDag.mock.calls[1][2]).toBe('session-1');
+    });
+
     it('strips <promise> tags from platform output', async () => {
       mockSendQueryDag.mockImplementation(function* () {
         yield { type: 'assistant', content: 'Done! <promise>COMPLETE</promise>' };
@@ -3836,7 +3891,67 @@ describe('executeDagWorkflow -- resume with priorCompletedNodes', () => {
       expect(sessionArg).toBe('loop-session-1');
     });
 
-    it('interactive loop resume with empty visible output sends an explicit notice before re-gating', async () => {
+    it('interactive loop resume uses resume_prompt with the latest user input', async () => {
+      mockSendQueryDag.mockImplementation(function* () {
+        yield { type: 'assistant', content: 'Updated section. <promise>APPROVED</promise>' };
+        yield { type: 'result', sessionId: 'resumed-session' };
+      });
+
+      const mockDeps = createMockDeps();
+      const platform = createMockPlatform();
+      const workflowRun = makeWorkflowRun('resumed-run-id', {
+        metadata: {
+          approval: {
+            type: 'interactive_loop',
+            nodeId: 'refine',
+            iteration: 1,
+            sessionId: 'loop-session-1',
+            message: 'Review the plan.',
+          },
+          loop_user_input: 'Use the lightweight path.',
+        },
+      });
+
+      await executeDagWorkflow(
+        mockDeps,
+        platform,
+        'conv-dag',
+        testDir,
+        {
+          name: 'interactive-loop-resume-prompt',
+          nodes: [
+            {
+              id: 'refine',
+              loop: {
+                prompt: 'FULL PROMPT. User said: $LOOP_USER_INPUT.',
+                resume_prompt: 'CONTINUE PROMPT. User said: $LOOP_USER_INPUT.',
+                until: 'APPROVED',
+                max_iterations: 10,
+                interactive: true,
+                gate_message: 'Review the plan.',
+              },
+            },
+          ],
+        },
+        workflowRun,
+        'claude',
+        undefined,
+        join(testDir, 'artifacts'),
+        join(testDir, 'logs'),
+        'main',
+        'docs/',
+        minimalConfig
+      );
+
+      expect(mockSendQueryDag.mock.calls.length).toBe(1);
+      const promptArg = mockSendQueryDag.mock.calls[0][0] as string;
+      expect(promptArg).toContain('CONTINUE PROMPT');
+      expect(promptArg).not.toContain('FULL PROMPT');
+      expect(promptArg).toContain('Use the lightweight path.');
+      expect(mockSendQueryDag.mock.calls[0][2]).toBe('loop-session-1');
+    });
+
+    it('interactive loop resume with empty visible output re-gates without internal notice', async () => {
       mockSendQueryDag.mockImplementation(function* () {
         yield { type: 'result', sessionId: 'loop-session-empty' };
       });
@@ -3894,8 +4009,77 @@ describe('executeDagWorkflow -- resume with priorCompletedNodes', () => {
         ) => Promise<void>
       >;
       const messages = sendMessage.mock.calls.map((call: unknown[]) => call[1] as string);
-      expect(messages).toContain(
+      expect(messages).not.toContain(
         "Received your latest input for loop 'refine', but this pass did not produce a visible reply. The next prompt below is continuing from your message, not ignoring it."
+      );
+      expect(messages.at(-1)).toContain('Input required');
+      expect(messages.at(-1)).toContain('Review the plan.');
+    });
+
+    it('interactive loop forwards provider warnings before re-gating', async () => {
+      mockSendQueryDag.mockImplementation(function* () {
+        yield {
+          type: 'system',
+          content: '⚠️ Could not resume previous session. Starting fresh conversation.',
+        };
+        yield { type: 'result', sessionId: 'loop-session-warning' };
+      });
+
+      const mockDeps = createMockDeps();
+      const platform = createMockPlatform();
+      const workflowRun = makeWorkflowRun('resumed-warning-run-id', {
+        metadata: {
+          approval: {
+            type: 'interactive_loop',
+            nodeId: 'refine',
+            iteration: 1,
+            sessionId: 'loop-session-1',
+            message: 'Review the plan.',
+          },
+          loop_user_input: 'The failure happens on long-running automation jobs.',
+        },
+      });
+
+      await executeDagWorkflow(
+        mockDeps,
+        platform,
+        'conv-dag',
+        testDir,
+        {
+          name: 'interactive-loop-resume-provider-warning',
+          nodes: [
+            {
+              id: 'refine',
+              loop: {
+                prompt: 'User said: $LOOP_USER_INPUT. Refine the plan.',
+                until: 'APPROVED',
+                max_iterations: 10,
+                interactive: true,
+                gate_message: 'Review the plan.',
+              },
+            },
+          ],
+        },
+        workflowRun,
+        'claude',
+        undefined,
+        join(testDir, 'artifacts'),
+        join(testDir, 'logs'),
+        'main',
+        'docs/',
+        minimalConfig
+      );
+
+      const sendMessage = platform.sendMessage as Mock<
+        (
+          conversationId: string,
+          message: string,
+          metadata?: Record<string, unknown>
+        ) => Promise<void>
+      >;
+      const messages = sendMessage.mock.calls.map((call: unknown[]) => call[1] as string);
+      expect(messages).toContain(
+        '⚠️ Could not resume previous session. Starting fresh conversation.'
       );
       expect(messages.at(-1)).toContain('Input required');
       expect(messages.at(-1)).toContain('Review the plan.');

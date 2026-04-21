@@ -1699,6 +1699,7 @@ nodes:
   - id: my-loop
     loop:
       prompt: "Do one task. Output <promise>COMPLETE</promise> when done."
+      resume_prompt: "Continue the same task using the existing provider session."
       until: COMPLETE
       max_iterations: 10
       fresh_context: true
@@ -1718,6 +1719,7 @@ nodes:
       expect(isLoopNode(wf.nodes[0])).toBe(true);
       if (isLoopNode(wf.nodes[0])) {
         expect(wf.nodes[0].loop.prompt).toContain('Do one task');
+        expect(wf.nodes[0].loop.resume_prompt).toContain('Continue the same task');
         expect(wf.nodes[0].loop.until).toBe('COMPLETE');
         expect(wf.nodes[0].loop.max_iterations).toBe(10);
         expect(wf.nodes[0].loop.fresh_context).toBe(true);
@@ -1883,6 +1885,30 @@ nodes:
   - id: my-loop
     loop:
       prompt: "Use $nonexistent.output to do stuff"
+      until: DONE
+      max_iterations: 5
+`
+      );
+
+      const result = await discoverWorkflows(testDir, { loadDefaults: false });
+      expect(result.errors.length).toBeGreaterThan(0);
+      expect(result.errors[0].error).toContain('nonexistent');
+    });
+
+    it('should validate $nodeId.output refs in loop.resume_prompt', async () => {
+      const workflowDir = join(testDir, '.archon', 'workflows');
+      await mkdir(workflowDir, { recursive: true });
+
+      await writeFile(
+        join(workflowDir, 'loop-bad-resume-ref.yaml'),
+        `
+name: loop-bad-resume-ref
+description: Bad ref in loop resume prompt
+nodes:
+  - id: my-loop
+    loop:
+      prompt: "Initial pass."
+      resume_prompt: "Use $nonexistent.output to continue."
       until: DONE
       max_iterations: 5
 `

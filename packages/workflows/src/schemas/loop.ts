@@ -5,8 +5,10 @@ import { z } from '@hono/zod-openapi';
 
 export const loopNodeConfigSchema = z
   .object({
-    /** Inline prompt text executed each iteration. */
+    /** Inline prompt text executed on the first iteration. */
     prompt: z.string().min(1, "loop node requires 'loop.prompt' (non-empty string)"),
+    /** Optional lightweight prompt text executed after the first iteration. */
+    resume_prompt: z.string().min(1, "'loop.resume_prompt' must be a non-empty string").optional(),
     /** Completion signal string detected in AI output (e.g., "COMPLETE"). */
     until: z.string().min(1, "loop node requires 'loop.until' (completion signal string)"),
     /** Maximum iterations allowed; exceeding this fails the node. */

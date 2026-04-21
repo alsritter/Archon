@@ -164,6 +164,7 @@ function validateDagStructure(nodes: DagNode[]): string | null {
     if (isClassifyNode(node)) sources.push(node.classify);
     if (isLoopNode(node)) {
       sources.push(node.loop.prompt);
+      if (node.loop.resume_prompt) sources.push(node.loop.resume_prompt);
     }
     for (const source of sources) {
       let m: RegExpExecArray | null;

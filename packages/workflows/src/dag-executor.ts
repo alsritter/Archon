@@ -46,7 +46,6 @@ import {
   isApprovalNode,
   isCancelNode,
   isScriptNode,
-  isMessageNode,
   isApprovalContext,
 } from './schemas';
 import { formatToolCall } from './utils/tool-formatter';
@@ -199,6 +198,10 @@ async function safeSendMessage(
 
     return false;
   }
+}
+
+function isUserActionableSystemMessage(content: string): boolean {
+  return content.startsWith('MCP server connection failed:') || content.startsWith('⚠️');
 }
 
 /**
@@ -827,13 +830,10 @@ async function executeNodeInternal(
         }
         break; // Result is the "I'm done" signal — don't wait for subprocess to exit
       } else if (msg.type === 'system' && msg.content) {
-        // Forward provider warnings (⚠️) and MCP connection failures to the user.
+        // Forward provider warnings and MCP connection failures to the user.
         // Providers yield system chunks for user-actionable issues (missing env vars,
         // Haiku+MCP, structured output failures, etc.)
-        if (
-          msg.content.startsWith('MCP server connection failed:') ||
-          msg.content.startsWith('⚠️')
-        ) {
+        if (isUserActionableSystemMessage(msg.content)) {
           getLog().warn(
             { nodeId: node.id, systemContent: msg.content },
             'dag.provider_warning_forwarded'
@@ -1634,8 +1634,10 @@ async function executeLoopNode(
     // Build prompt — substituteWorkflowVariables throws if $BASE_BRANCH referenced but empty
     // Pass loopUserInput on the first resumed iteration; '' on all others (non-interactive
     // or subsequent iterations) so $LOOP_USER_INPUT substitutes to empty string explicitly.
+    const rawLoopPrompt =
+      (isLoopResume || i > 1) && loop.resume_prompt ? loop.resume_prompt : loop.prompt;
     const { prompt: substitutedPrompt } = substituteWorkflowVariables(
-      loop.prompt,
+      rawLoopPrompt,
       workflowRun.id,
       workflowRun.user_message,
       artifactsDir,
@@ -1706,6 +1708,7 @@ async function executeLoopNode(
     // Stream AI response for this iteration
     let fullOutput = ''; // raw, for signal detection
     let cleanOutput = ''; // stripped, for platform display
+    let systemOutput = ''; // user-actionable provider system messages
     let iterationIdleTimedOut = false;
     const iterationAbortController = new AbortController();
 
@@ -1839,6 +1842,32 @@ async function executeLoopNode(
             });
         } else if (msg.type === 'tool_result' && platform.sendStructuredEvent) {
           await platform.sendStructuredEvent(conversationId, msg);
+        } else if (msg.type === 'system' && msg.content) {
+          if (isUserActionableSystemMessage(msg.content)) {
+            getLog().warn(
+              { nodeId: node.id, systemContent: msg.content },
+              'loop_node.provider_warning_forwarded'
+            );
+            const delivered = await safeSendMessage(
+              platform,
+              conversationId,
+              msg.content,
+              msgContext
+            );
+            if (delivered) {
+              systemOutput += `${msg.content}\n`;
+            } else {
+              getLog().error(
+                { nodeId: node.id, workflowRunId: workflowRun.id },
+                'loop_node.provider_warning_delivery_failed'
+              );
+            }
+          } else {
+            getLog().debug(
+              { nodeId: node.id, systemContent: msg.content },
+              'loop_node.system_message_unhandled'
+            );
+          }
         }
         // rate_limit chunks: already log.warn'd in claude.ts; not surfaced to SSE per design
       }
@@ -1886,7 +1915,7 @@ async function executeLoopNode(
       await safeSendMessage(platform, conversationId, cleanOutput, msgContext);
     }
 
-    lastIterationOutput = cleanOutput || fullOutput;
+    lastIterationOutput = cleanOutput || systemOutput.trimEnd() || fullOutput;
 
     // Check LLM completion signal — the AI decides whether the user approved.
     // For interactive loops, the AI emits the signal when the user explicitly approves
@@ -2018,14 +2047,6 @@ async function executeLoopNode(
     // completion signal. The user reviews the AI's output and provides feedback or approval.
     // On approval, the AI will emit the signal in the next iteration, exiting above.
     if (loop.interactive && loop.gate_message) {
-      if (isLoopResume && !cleanOutput.trim()) {
-        await safeSendMessage(
-          platform,
-          conversationId,
-          `Received your latest input for loop '${node.id}', but this pass did not produce a visible reply. The next prompt below is continuing from your message, not ignoring it.`,
-          msgContext
-        );
-      }
       const gateMsg =
         `\u23f8 **Input required** (loop \`${node.id}\`, iteration ${String(i)}): ${loop.gate_message}\n\n` +
         `Run ID: \`${workflowRun.id}\`\n` +
@@ -2714,7 +2735,7 @@ export async function executeDagWorkflow(
           }
 
           // 3e. Message node dispatch — sends a platform message without AI
-          if (isMessageNode(node)) {
+          if ('message' in node && typeof node.message === 'string') {
             const output = await executeMessageNode(
               deps,
               platform,
