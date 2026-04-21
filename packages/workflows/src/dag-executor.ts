@@ -5,7 +5,8 @@
  * Independent nodes within the same layer run concurrently via Promise.allSettled.
  * Captures all assistant output regardless of streaming mode for $node_id.output substitution.
  */
-import { resolve } from 'path';
+import { readFile } from 'fs/promises';
+import { join, resolve } from 'path';
 import { execFileAsync } from '@archon/git';
 import { discoverScripts } from './script-discovery';
 import type {
@@ -1100,6 +1101,24 @@ async function executeNodeInternal(
 /** Default timeout for subprocess nodes (bash, script): 2 minutes */
 const SUBPROCESS_DEFAULT_TIMEOUT = 120_000;
 
+async function readSubprocessNodePayload(
+  artifactsDir: string,
+  nodeId: string
+): Promise<NodeOutput['payload'] | undefined> {
+  const payloadPath = join(artifactsDir, `${nodeId}.payload.json`);
+
+  try {
+    const raw = await readFile(payloadPath, 'utf8');
+    return JSON.parse(raw) as NodeOutput['payload'];
+  } catch (error) {
+    const err = error as NodeJS.ErrnoException;
+    if (err.code === 'ENOENT') return undefined;
+    throw new Error(
+      `Node '${nodeId}' payload file is not valid JSON or cannot be read: ${payloadPath}: ${err.message}`
+    );
+  }
+}
+
 /**
  * Execute a bash (shell script) DAG node.
  * Runs the script via `bash -c`, captures stdout as node output.
@@ -1173,6 +1192,7 @@ async function executeBashNode(
 
     // Trim trailing newline from stdout (common shell behavior)
     const output = stdout.replace(/\n$/, '');
+    const payload = await readSubprocessNodePayload(artifactsDir, node.id);
 
     if (stderr.trim()) {
       getLog().warn({ nodeId: node.id, stderr: stderr.trim() }, 'bash_node_stderr');
@@ -1193,7 +1213,12 @@ async function executeBashNode(
         workflow_run_id: workflowRun.id,
         event_type: 'node_completed',
         step_name: node.id,
-        data: { duration_ms: duration, type: 'bash', node_output: output },
+        data: {
+          duration_ms: duration,
+          type: 'bash',
+          node_output: output,
+          ...(payload !== undefined ? { node_payload: payload } : {}),
+        },
       })
       .catch((err: Error) => {
         getLog().error(
@@ -1210,7 +1235,7 @@ async function executeBashNode(
       duration,
     });
 
-    return { state: 'completed', output };
+    return { state: 'completed', output, ...(payload !== undefined ? { payload } : {}) };
   } catch (error) {
     const err = error as Error & { killed?: boolean; code?: number | string };
     const isTimeout = err.killed === true || (err.message ?? '').includes('timed out');
@@ -1398,6 +1423,7 @@ async function executeScriptNode(
 
     // Trim trailing newline from stdout (common shell behavior)
     const output = stdout.replace(/\n$/, '');
+    const payload = await readSubprocessNodePayload(artifactsDir, node.id);
 
     if (stderr.trim()) {
       getLog().warn({ nodeId: node.id, stderr: stderr.trim() }, 'script_node_stderr');
@@ -1418,7 +1444,12 @@ async function executeScriptNode(
         workflow_run_id: workflowRun.id,
         event_type: 'node_completed',
         step_name: node.id,
-        data: { duration_ms: duration, type: 'script', node_output: output },
+        data: {
+          duration_ms: duration,
+          type: 'script',
+          node_output: output,
+          ...(payload !== undefined ? { node_payload: payload } : {}),
+        },
       })
       .catch((err: Error) => {
         getLog().error(
@@ -1435,7 +1466,7 @@ async function executeScriptNode(
       duration,
     });
 
-    return { state: 'completed', output };
+    return { state: 'completed', output, ...(payload !== undefined ? { payload } : {}) };
   } catch (error) {
     const err = error as Error & { killed?: boolean; code?: number | string; stderr?: string };
     const isTimeout = err.killed === true || (err.message ?? '').includes('timed out');

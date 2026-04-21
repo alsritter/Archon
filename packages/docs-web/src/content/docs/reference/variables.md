@@ -12,7 +12,7 @@ Archon substitutes variables in command files, inline prompts, and bash scripts 
 
 ## Workflow Variables
 
-These variables are substituted by the workflow executor in all node types (`command:`, `prompt:`, `bash:`, `loop:`).
+These variables are substituted by the workflow executor in all node types (`command:`, `prompt:`, `bash:`, `script:`, `loop:`).
 
 | Variable | Resolves to | Notes |
 |----------|-------------|-------|
@@ -62,7 +62,11 @@ In DAG workflows, nodes can reference the output of any completed upstream node.
 | Pattern | Resolves to | Notes |
 |---------|-------------|-------|
 | `$nodeId.output` | Full output string of the referenced node | The node must be a declared dependency (in `depends_on`) |
-| `$nodeId.output.field` | A specific JSON field from the node's output | Requires the upstream node to use `output_format` for structured JSON |
+| `$nodeId.output.field` | A specific JSON field from the node's output, preferring payload when present | Requires structured JSON output or payload |
+| `$nodeId.payload` | Full structured payload of the referenced node | Available when an upstream node produced payload |
+| `$nodeId.payload.field` | A specific field from the node's structured payload | Preferred for machine-readable data |
+
+`prompt:` and `command:` nodes produce payload when they use `output_format`. `bash:` and `script:` nodes can produce payload by writing JSON to `$ARTIFACTS_DIR/<nodeId>.payload.json`; stdout remains the human-readable `$nodeId.output`. If the payload file is absent, payload is undefined. If it exists but is not valid JSON, the node fails.
 
 ### Example
 
@@ -90,7 +94,7 @@ Variables are substituted in a defined order:
 
 1. **Workflow variables** -- `$WORKFLOW_ID`, `$USER_MESSAGE`, `$ARGUMENTS`, `$ARTIFACTS_DIR`, `$BASE_BRANCH`, `$DOCS_DIR`, `$LOOP_USER_INPUT`, `$REJECTION_REASON`
 2. **Context variables** -- `$CONTEXT`, `$EXTERNAL_CONTEXT`, `$ISSUE_CONTEXT`
-3. **Node output references** -- `$nodeId.output`, `$nodeId.output.field`
+3. **Node output references** -- `$nodeId.output`, `$nodeId.output.field`, `$nodeId.payload`, `$nodeId.payload.field`
 
 Positional arguments (`$1` through `$9`) are substituted separately by the command handler and are only available when commands are invoked directly, not through workflow nodes.
 
@@ -108,3 +112,6 @@ Positional arguments (`$1` through `$9`) are substituted separately by the comma
 | `$LOOP_USER_INPUT` | Yes (loop nodes) | No | No |
 | `$REJECTION_REASON` | Yes (`on_reject` only) | No | No |
 | `$nodeId.output` | Yes (DAG nodes) | No | Yes |
+| `$nodeId.output.field` | Yes (DAG nodes) | No | Yes |
+| `$nodeId.payload` | Yes (DAG nodes) | No | Yes |
+| `$nodeId.payload.field` | Yes (DAG nodes) | No | Yes |

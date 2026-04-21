@@ -1137,6 +1137,66 @@ describe('executeDagWorkflow -- bash nodes', () => {
     expect(prompt).toContain('42 files');
   });
 
+  it('bash node payload file is available for downstream $nodeId.payload substitution', async () => {
+    const store = createMockStore();
+    const mockDeps = createMockDeps(store);
+    const platform = createMockPlatform();
+    const workflowRun = makeWorkflowRun('bash-payload-run-id', {
+      workflow_name: 'bash-payload-test',
+      conversation_id: 'conv-bash-payload',
+      user_message: 'bash payload test',
+    });
+    const artifactsDir = join(testDir, 'artifacts');
+
+    const commandsDir = join(testDir, '.archon', 'commands');
+    await mkdir(commandsDir, { recursive: true });
+    await writeFile(
+      join(commandsDir, 'use-payload.md'),
+      'Payload: $stats.payload.kind / $stats.payload.count; Output: $stats.output'
+    );
+
+    const nodes: DagNode[] = [
+      {
+        id: 'stats',
+        bash: 'mkdir -p "$ARTIFACTS_DIR" && printf \'{"kind":"bash","count":7}\' > "$ARTIFACTS_DIR/stats.payload.json" && echo "summary"',
+      },
+      { id: 'use', command: 'use-payload', depends_on: ['stats'] },
+    ];
+
+    await executeDagWorkflow(
+      mockDeps,
+      platform,
+      'conv-bash-payload',
+      testDir,
+      { name: 'bash-payload-test', nodes },
+      workflowRun,
+      'claude',
+      undefined,
+      artifactsDir,
+      join(testDir, 'logs'),
+      'main',
+      'docs/',
+      minimalConfig
+    );
+
+    expect(mockSendQueryDag.mock.calls.length).toBe(1);
+    const prompt = mockSendQueryDag.mock.calls[0][0] as string;
+    expect(prompt).toContain('Payload: bash / 7');
+    expect(prompt).toContain('Output: summary');
+
+    const eventCalls = (store.createWorkflowEvent as ReturnType<typeof mock>).mock.calls;
+    const completedEvent = eventCalls.find(
+      (call: unknown[]) =>
+        (call[0] as { event_type: string }).event_type === 'node_completed' &&
+        (call[0] as { step_name: string }).step_name === 'stats'
+    );
+    expect(completedEvent).toBeDefined();
+    expect((completedEvent![0] as { data: { node_payload: unknown } }).data.node_payload).toEqual({
+      kind: 'bash',
+      count: 7,
+    });
+  });
+
   it('non-zero exit code results in failed state', async () => {
     const mockDeps = createMockDeps();
     const platform = createMockPlatform();
@@ -5333,6 +5393,68 @@ describe('executeDagWorkflow -- script nodes', () => {
     expect(mockSendQueryDag.mock.calls.length).toBe(1);
     const prompt = mockSendQueryDag.mock.calls[0][0] as string;
     expect(prompt).toContain('42');
+  });
+
+  it('inline bun script payload file is available for downstream $nodeId.payload substitution', async () => {
+    const store = createMockStore();
+    const mockDeps = createMockDeps(store);
+    const platform = createMockPlatform();
+    const workflowRun = makeWorkflowRun('script-payload-run-id', {
+      workflow_name: 'script-payload-test',
+      conversation_id: 'conv-script-payload',
+      user_message: 'script payload test',
+    });
+    const artifactsDir = join(testDir, 'artifacts');
+
+    const commandsDir = join(testDir, '.archon', 'commands');
+    await mkdir(commandsDir, { recursive: true });
+    await writeFile(
+      join(commandsDir, 'use-payload.md'),
+      'Payload: $compute.payload.kind / $compute.payload.count; Output: $compute.output'
+    );
+
+    const nodes: DagNode[] = [
+      {
+        id: 'compute',
+        script:
+          'await Bun.write("$ARTIFACTS_DIR/compute.payload.json", JSON.stringify({ kind: "script", count: 3 })); console.log("summary")',
+        runtime: 'bun',
+      },
+      { id: 'use', command: 'use-payload', depends_on: ['compute'] },
+    ];
+
+    await executeDagWorkflow(
+      mockDeps,
+      platform,
+      'conv-script-payload',
+      testDir,
+      { name: 'script-payload-test', nodes },
+      workflowRun,
+      'claude',
+      undefined,
+      artifactsDir,
+      join(testDir, 'logs'),
+      'main',
+      'docs/',
+      minimalConfig
+    );
+
+    expect(mockSendQueryDag.mock.calls.length).toBe(1);
+    const prompt = mockSendQueryDag.mock.calls[0][0] as string;
+    expect(prompt).toContain('Payload: script / 3');
+    expect(prompt).toContain('Output: summary');
+
+    const eventCalls = (store.createWorkflowEvent as ReturnType<typeof mock>).mock.calls;
+    const completedEvent = eventCalls.find(
+      (call: unknown[]) =>
+        (call[0] as { event_type: string }).event_type === 'node_completed' &&
+        (call[0] as { step_name: string }).step_name === 'compute'
+    );
+    expect(completedEvent).toBeDefined();
+    expect((completedEvent![0] as { data: { node_payload: unknown } }).data.node_payload).toEqual({
+      kind: 'script',
+      count: 3,
+    });
   });
 
   it('inline uv script executes and captures stdout', async () => {

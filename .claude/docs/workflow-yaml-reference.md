@@ -168,6 +168,18 @@ Nodes are sorted topologically (Kahn's algorithm). Nodes in the same layer run c
   timeout: 120000
 ```
 
+**`script:`** — Inline script, no AI. Stdout captured as `$nodeId.output`
+```yaml
+- id: collect
+  script: |
+    await Bun.write(
+      "$ARTIFACTS_DIR/collect.payload.json",
+      JSON.stringify({ count: 12 })
+    );
+    console.log("Collected records")
+  runtime: bun
+```
+
 ### AI-Only Fields (command/prompt nodes)
 
 | Field | Type | Default | Description |
@@ -177,11 +189,14 @@ Nodes are sorted topologically (Kahn's algorithm). Nodes in the same layer run c
 | `allowed_tools` | string[] | all | Tool whitelist (Claude only). `[]` = no tools |
 | `denied_tools` | string[] | none | Tool blacklist (Claude only) |
 
-### Bash-Only Fields
+### Subprocess Fields (bash/script nodes)
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `timeout` | number (ms) | 120000 (2 min) | Total execution timeout for the subprocess |
+| `runtime` | string | none | Script runtime for `script:` nodes (`bun`, `node`, or discovered script runtime) |
+
+`bash:` and `script:` nodes can expose structured data without printing it by writing JSON to `$ARTIFACTS_DIR/<nodeId>.payload.json`. The JSON is available downstream as `$nodeId.payload` and `$nodeId.payload.field`; stdout remains available as `$nodeId.output`. If the file exists but is invalid JSON, the node fails.
 
 ---
 
@@ -207,7 +222,7 @@ when: "$classify.output.complexity != 'trivial'"
 
 **Pattern**: `$nodeId.output[.field] OPERATOR 'value'`
 - **Operators**: `==` and `!=` only
-- **Field access**: dot-notation into JSON from `output_format` nodes
+- **Field access**: dot-notation into JSON from `output_format` nodes or subprocess payload files
 - **Values**: single-quoted string literals
 - **Fail behavior**: unparseable expressions → `false` (node skipped)
 
@@ -241,7 +256,9 @@ when: "$classify.output.complexity != 'trivial'"
 | Variable | Replaced With |
 |----------|--------------|
 | `$nodeId.output` | Full output string from completed node |
-| `$nodeId.output.field` | JSON field value from structured output |
+| `$nodeId.output.field` | JSON field value from structured output or payload |
+| `$nodeId.payload` | Full structured payload from completed node |
+| `$nodeId.payload.field` | JSON field value from structured payload |
 
 For bash node scripts, substituted values are shell-quoted for safety.
 

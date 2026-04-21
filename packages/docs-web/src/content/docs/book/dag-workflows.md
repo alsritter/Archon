@@ -190,6 +190,25 @@ You can also use `$nodeId.output` directly inside `prompt:` text to pass context
   depends_on: [investigate]
 ```
 
+Subprocess nodes can also expose structured payload without printing it to stdout. Write JSON to `$ARTIFACTS_DIR/<nodeId>.payload.json` from a `bash:` or `script:` node, then read it downstream with `$nodeId.payload` or `$nodeId.payload.field`:
+
+```yaml
+- id: collect
+  script: |
+    await Bun.write(
+      "$ARTIFACTS_DIR/collect.payload.json",
+      JSON.stringify({ count: 12, status: "ready" })
+    );
+    console.log("Collected 12 records")
+  runtime: bun
+
+- id: use_payload
+  prompt: "Generate a prompt for $collect.payload.count records."
+  depends_on: [collect]
+```
+
+If the payload file is absent, payload is undefined and `$nodeId.output` still contains stdout. If the file exists but is not valid JSON, the node fails.
+
 ### Structured Output with `output_format`
 
 `output_format` tells Archon to enforce JSON output from an AI node. Pass a JSON Schema and Archon will ensure the node returns data in that shape:
@@ -209,7 +228,7 @@ You can also use `$nodeId.output` directly inside `prompt:` text to pass context
     required: [type]
 ```
 
-The result is available as `$classify.output` (full JSON string) or `$classify.output.type`, `$classify.output.severity` (individual fields).
+The result is available as `$classify.output` (full JSON string) or `$classify.output.type`, `$classify.output.severity` (individual fields). It is also available as `$classify.payload` and `$classify.payload.type` for consistency with subprocess payloads.
 
 > **Use `output_format` whenever you need routing.** Without it, `$nodeId.output` is a plain text string and field access won't work reliably.
 
