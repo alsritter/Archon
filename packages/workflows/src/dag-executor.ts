@@ -28,6 +28,7 @@ import type {
   BashNode,
   CommandNode,
   ClassifyNode,
+  MessageNode,
   PromptNode,
   LoopNode,
   ScriptNode,
@@ -45,6 +46,7 @@ import {
   isApprovalNode,
   isCancelNode,
   isScriptNode,
+  isMessageNode,
   isApprovalContext,
 } from './schemas';
 import { formatToolCall } from './utils/tool-formatter';
@@ -2278,6 +2280,94 @@ async function executeApprovalNode(
 }
 
 /**
+ * Execute a message node — sends substituted text to the active platform without AI.
+ */
+async function executeMessageNode(
+  deps: WorkflowDeps,
+  platform: IWorkflowPlatform,
+  conversationId: string,
+  workflowRun: WorkflowRun,
+  node: MessageNode,
+  artifactsDir: string,
+  logDir: string,
+  baseBranch: string,
+  docsDir: string,
+  nodeOutputs: Map<string, NodeOutput>,
+  issueContext?: string
+): Promise<NodeOutput> {
+  const nodeStartTime = Date.now();
+  const nodeContext: SendMessageContext = { workflowId: workflowRun.id, nodeName: node.id };
+
+  getLog().info({ nodeId: node.id, type: 'message' }, 'dag_node_started');
+  await logNodeStart(logDir, workflowRun.id, node.id, '<message>');
+
+  deps.store
+    .createWorkflowEvent({
+      workflow_run_id: workflowRun.id,
+      event_type: 'node_started',
+      step_name: node.id,
+      data: { type: 'message' },
+    })
+    .catch((err: Error) => {
+      getLog().error(
+        { err, workflowRunId: workflowRun.id, eventType: 'node_started' },
+        'workflow_event_persist_failed'
+      );
+    });
+
+  const emitter = getWorkflowEventEmitter();
+  emitter.emit({
+    type: 'node_started',
+    runId: workflowRun.id,
+    nodeId: node.id,
+    nodeName: node.id,
+  });
+
+  const { prompt: substitutedMessage } = substituteWorkflowVariables(
+    node.message,
+    workflowRun.id,
+    workflowRun.user_message,
+    artifactsDir,
+    baseBranch,
+    docsDir,
+    issueContext
+  );
+  const resolvedMessage = substituteNodeOutputRefs(substitutedMessage, nodeOutputs);
+
+  await safeSendMessage(platform, conversationId, resolvedMessage, nodeContext, {
+    category: 'workflow_status',
+  });
+
+  const duration = Date.now() - nodeStartTime;
+  getLog().info({ nodeId: node.id, durationMs: duration }, 'dag_node_completed');
+  await logNodeComplete(logDir, workflowRun.id, node.id, '<message>', { durationMs: duration });
+
+  deps.store
+    .createWorkflowEvent({
+      workflow_run_id: workflowRun.id,
+      event_type: 'node_completed',
+      step_name: node.id,
+      data: { duration_ms: duration, type: 'message', node_output: resolvedMessage },
+    })
+    .catch((err: Error) => {
+      getLog().error(
+        { err, workflowRunId: workflowRun.id, eventType: 'node_completed' },
+        'workflow_event_persist_failed'
+      );
+    });
+
+  emitter.emit({
+    type: 'node_completed',
+    runId: workflowRun.id,
+    nodeId: node.id,
+    nodeName: node.id,
+    duration,
+  });
+
+  return { state: 'completed', output: resolvedMessage };
+}
+
+/**
  * Execute a complete DAG workflow.
  * Called from executeWorkflow() in executor.ts.
  */
@@ -2623,7 +2713,25 @@ export async function executeDagWorkflow(
             return { nodeId: node.id, output: { state: 'completed' as const, output: reason } };
           }
 
-          // 3e. Script node dispatch — runs via bun or uv
+          // 3e. Message node dispatch — sends a platform message without AI
+          if (isMessageNode(node)) {
+            const output = await executeMessageNode(
+              deps,
+              platform,
+              conversationId,
+              workflowRun,
+              node,
+              artifactsDir,
+              logDir,
+              baseBranch,
+              docsDir,
+              nodeOutputs,
+              issueContext
+            );
+            return { nodeId: node.id, output };
+          }
+
+          // 3f. Script node dispatch — runs via bun or uv
           if (isScriptNode(node)) {
             const output = await executeScriptNode(
               deps,

@@ -161,6 +161,15 @@ Nodes are sorted topologically (Kahn's algorithm). Nodes in the same layer run c
   prompt: "Classify this issue as BUG or FEATURE"
 ```
 
+**`message:`** — Send text to the active platform, no AI
+```yaml
+- id: present
+  message: |
+    Here is the generated prompt:
+    $render.payload.prompt
+  depends_on: [render]
+```
+
 **`bash:`** — Shell script, no AI. Stdout captured as `$nodeId.output`
 ```yaml
 - id: lint

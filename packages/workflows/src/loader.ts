@@ -2,7 +2,14 @@
  * Workflow loader - discovers and parses workflow YAML files
  */
 import type { WorkflowDefinition, WorkflowLoadError, DagNode, WorkflowNodeHooks } from './schemas';
-import { isLoopNode, isApprovalNode, isCancelNode, isScriptNode, isClassifyNode } from './schemas';
+import {
+  isLoopNode,
+  isApprovalNode,
+  isCancelNode,
+  isScriptNode,
+  isClassifyNode,
+  isMessageNode,
+} from './schemas';
 import { createLogger } from '@archon/paths';
 import { isModelCompatible } from './model-validation';
 import {
@@ -75,6 +82,9 @@ function parseDagNode(raw: unknown, index: number, errors: string[]): DagNode | 
   } else if (isScriptNode(node)) {
     nodeType = 'script';
     aiFields = SCRIPT_NODE_AI_FIELDS;
+  } else if (isMessageNode(node)) {
+    nodeType = 'message';
+    aiFields = BASH_NODE_AI_FIELDS;
   } else if ('bash' in node && typeof node.bash === 'string') {
     nodeType = 'bash';
     aiFields = BASH_NODE_AI_FIELDS;
@@ -144,12 +154,13 @@ function validateDagStructure(nodes: DagNode[]): string | null {
     return `Cycle detected among nodes: ${cycleNodes.join(', ')}`;
   }
 
-  // Check $nodeId.output references in when: and prompt: fields
-  const outputRefPattern = /\$([a-zA-Z_][a-zA-Z0-9_-]*)\.output/g;
+  // Check $nodeId.output/$nodeId.payload references in fields that support node refs
+  const outputRefPattern = /\$([a-zA-Z_][a-zA-Z0-9_-]*)\.(?:output|payload)/g;
   for (const node of nodes) {
     const sources: string[] = [];
     if (node.when) sources.push(node.when);
     if ('prompt' in node && typeof node.prompt === 'string') sources.push(node.prompt);
+    if (isMessageNode(node)) sources.push(node.message);
     if (isClassifyNode(node)) sources.push(node.classify);
     if (isLoopNode(node)) {
       sources.push(node.loop.prompt);
@@ -160,7 +171,7 @@ function validateDagStructure(nodes: DagNode[]): string | null {
       while ((m = outputRefPattern.exec(source)) !== null) {
         const refNodeId = m[1];
         if (refNodeId !== undefined && !ids.has(refNodeId)) {
-          return `Node '${node.id}' references unknown node '$${refNodeId}.output'`;
+          return `Node '${node.id}' references unknown node '$${refNodeId}'`;
         }
       }
     }

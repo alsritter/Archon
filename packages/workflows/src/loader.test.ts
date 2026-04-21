@@ -34,7 +34,7 @@ clearRegistry();
 registerBuiltinProviders();
 
 import { discoverWorkflows } from './workflow-discovery';
-import { isBashNode, isCancelNode, isLoopNode } from './schemas';
+import { isBashNode, isCancelNode, isLoopNode, isMessageNode } from './schemas';
 import * as bundledDefaults from './defaults/bundled-defaults';
 
 describe('Workflow Loader', () => {
@@ -2105,6 +2105,84 @@ nodes:
       expect(result.errors).toHaveLength(0);
       // AI fields should produce a warning log
       expect(mockLogger.warn).toHaveBeenCalled();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Message nodes
+  // -------------------------------------------------------------------------
+  describe('message nodes', () => {
+    it('should parse a valid message node with output and payload refs', async () => {
+      const workflowDir = join(testDir, '.archon', 'workflows');
+      await mkdir(workflowDir, { recursive: true });
+
+      await writeFile(
+        join(workflowDir, 'message-test.yaml'),
+        `
+name: message-test
+description: Message node test
+nodes:
+  - id: render
+    runtime: bun
+    script: "console.log('ready')"
+  - id: present
+    depends_on: [render]
+    message: |
+      Prompt: $render.payload.prompt
+      Summary: $render.output
+`
+      );
+
+      const result = await discoverWorkflows(testDir, { loadDefaults: false });
+      expect(result.errors).toHaveLength(0);
+      const wf = result.workflows[0].workflow;
+      expect(wf.nodes).toHaveLength(2);
+      expect(isMessageNode(wf.nodes[1])).toBe(true);
+      if (isMessageNode(wf.nodes[1])) {
+        expect(wf.nodes[1].message).toContain('$render.payload.prompt');
+      }
+    });
+
+    it('should reject message node with unknown output ref', async () => {
+      const workflowDir = join(testDir, '.archon', 'workflows');
+      await mkdir(workflowDir, { recursive: true });
+
+      await writeFile(
+        join(workflowDir, 'message-bad-ref.yaml'),
+        `
+name: message-bad-ref
+description: Message node bad ref
+nodes:
+  - id: present
+    message: "Missing: $missing.output"
+`
+      );
+
+      const result = await discoverWorkflows(testDir, { loadDefaults: false });
+      expect(result.errors.length).toBeGreaterThan(0);
+      expect(result.errors[0].error).toContain('missing');
+    });
+
+    it('should reject node with both message and script', async () => {
+      const workflowDir = join(testDir, '.archon', 'workflows');
+      await mkdir(workflowDir, { recursive: true });
+
+      await writeFile(
+        join(workflowDir, 'message-script.yaml'),
+        `
+name: message-script-conflict
+description: Message + script conflict
+nodes:
+  - id: bad
+    runtime: bun
+    script: "console.log('hello')"
+    message: "hello"
+`
+      );
+
+      const result = await discoverWorkflows(testDir, { loadDefaults: false });
+      expect(result.errors.length).toBeGreaterThan(0);
+      expect(result.errors[0].error).toContain('mutually exclusive');
     });
   });
 });

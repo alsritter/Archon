@@ -152,11 +152,13 @@ export const commandNodeSchema = dagNodeBaseSchema.extend({
 /** DAG node that runs a named command from .archon/commands/ */
 export type CommandNode = z.infer<typeof commandNodeSchema> & {
   prompt?: never;
+  classify?: never;
   bash?: never;
   loop?: never;
   approval?: never;
   cancel?: never;
   script?: never;
+  message?: never;
 };
 
 export const promptNodeSchema = dagNodeBaseSchema.extend({
@@ -166,6 +168,23 @@ export const promptNodeSchema = dagNodeBaseSchema.extend({
 /** DAG node with an inline prompt (no command file) */
 export type PromptNode = z.infer<typeof promptNodeSchema> & {
   command?: never;
+  classify?: never;
+  bash?: never;
+  loop?: never;
+  approval?: never;
+  cancel?: never;
+  script?: never;
+  message?: never;
+};
+
+export const messageNodeSchema = dagNodeBaseSchema.extend({
+  message: z.string().min(1, 'message cannot be empty'),
+});
+
+/** DAG node that sends a message to the active platform without invoking AI */
+export type MessageNode = z.infer<typeof messageNodeSchema> & {
+  command?: never;
+  prompt?: never;
   classify?: never;
   bash?: never;
   loop?: never;
@@ -190,6 +209,7 @@ export type ClassifyNode = z.infer<typeof classifyNodeSchema> & {
   approval?: never;
   cancel?: never;
   script?: never;
+  message?: never;
 };
 
 /**
@@ -210,6 +230,7 @@ export type BashNode = z.infer<typeof bashNodeSchema> & {
   approval?: never;
   cancel?: never;
   script?: never;
+  message?: never;
 };
 
 /**
@@ -233,6 +254,7 @@ export type ScriptNode = z.infer<typeof scriptNodeSchema> & {
   loop?: never;
   approval?: never;
   cancel?: never;
+  message?: never;
 };
 
 /**
@@ -253,6 +275,7 @@ export type LoopNode = z.infer<typeof loopNodeSchema> & {
   approval?: never;
   cancel?: never;
   script?: never;
+  message?: never;
 };
 
 /** Schema for the `on_reject` sub-object on approval nodes. */
@@ -284,6 +307,7 @@ export type ApprovalNode = z.infer<typeof approvalNodeSchema> & {
   loop?: never;
   cancel?: never;
   script?: never;
+  message?: never;
 };
 
 /**
@@ -303,12 +327,14 @@ export type CancelNode = z.infer<typeof cancelNodeSchema> & {
   loop?: never;
   approval?: never;
   script?: never;
+  message?: never;
 };
 
-/** A single node in a DAG workflow. command, prompt, classify, bash, loop, approval, cancel, and script are mutually exclusive. */
+/** A single node in a DAG workflow. command, prompt, message, classify, bash, loop, approval, cancel, and script are mutually exclusive. */
 export type DagNode =
   | CommandNode
   | PromptNode
+  | MessageNode
   | ClassifyNode
   | BashNode
   | LoopNode
@@ -373,6 +399,7 @@ export const dagNodeSchema = dagNodeBaseSchema
     // Mode fields (exactly one required)
     command: z.string().optional(),
     prompt: z.string().optional(),
+    message: z.string().optional(),
     classify: z.string().optional(),
     bash: z.string().optional(),
     loop: loopNodeConfigSchema.optional(),
@@ -406,6 +433,7 @@ export const dagNodeSchema = dagNodeBaseSchema
 
     const hasCommand = typeof data.command === 'string' && data.command.trim().length > 0;
     const hasPrompt = typeof data.prompt === 'string' && data.prompt.trim().length > 0;
+    const hasMessage = typeof data.message === 'string' && data.message.trim().length > 0;
     const hasClassify = typeof data.classify === 'string' && data.classify.trim().length > 0;
     const hasBash = typeof data.bash === 'string' && data.bash.trim().length > 0;
     const hasLoop = data.loop !== undefined;
@@ -416,6 +444,7 @@ export const dagNodeSchema = dagNodeBaseSchema
     const modeCount = [
       hasCommand,
       hasPrompt,
+      hasMessage,
       hasClassify,
       hasBash,
       hasLoop,
@@ -428,7 +457,7 @@ export const dagNodeSchema = dagNodeBaseSchema
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message:
-          "'command', 'prompt', 'classify', 'bash', 'loop', 'approval', 'cancel', and 'script' are mutually exclusive",
+          "'command', 'prompt', 'message', 'classify', 'bash', 'loop', 'approval', 'cancel', and 'script' are mutually exclusive",
       });
       return z.NEVER;
     }
@@ -446,6 +475,14 @@ export const dagNodeSchema = dagNodeBaseSchema
           code: z.ZodIssueCode.custom,
           message: 'prompt cannot be empty',
           path: ['prompt'],
+        });
+        return z.NEVER;
+      }
+      if (typeof data.message === 'string') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'message cannot be empty',
+          path: ['message'],
         });
         return z.NEVER;
       }
@@ -468,7 +505,7 @@ export const dagNodeSchema = dagNodeBaseSchema
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message:
-          "must have either 'command', 'prompt', 'classify', 'bash', 'loop', 'approval', 'cancel', or 'script'",
+          "must have either 'command', 'prompt', 'message', 'classify', 'bash', 'loop', 'approval', 'cancel', or 'script'",
       });
       return z.NEVER;
     }
@@ -541,7 +578,7 @@ export const dagNodeSchema = dagNodeBaseSchema
     }
 
     // Provider/model compatibility (AI nodes only)
-    if (!hasBash && !hasLoop && !hasScript && data.provider && data.model) {
+    if (!hasBash && !hasLoop && !hasScript && !hasMessage && data.provider && data.model) {
       try {
         if (!isModelCompatible(data.provider, data.model)) {
           ctx.addIssue({
@@ -603,6 +640,9 @@ export const dagNodeSchema = dagNodeBaseSchema
     if (data.prompt !== undefined && data.prompt.trim().length > 0) {
       return { ...base, ...shared, ...aiOnly, prompt: data.prompt.trim() } as PromptNode;
     }
+    if (data.message !== undefined && data.message.trim().length > 0) {
+      return { ...base, ...shared, message: data.message.trim() } as MessageNode;
+    }
     if (data.classify !== undefined && data.classify.trim().length > 0) {
       return { ...base, ...shared, ...aiOnly, classify: data.classify.trim() } as ClassifyNode;
     }
@@ -650,6 +690,11 @@ export function isBashNode(node: DagNode): node is BashNode {
 /** Type guard: check if a DAG node is a classify node */
 export function isClassifyNode(node: DagNode): node is ClassifyNode {
   return 'classify' in node && typeof node.classify === 'string';
+}
+
+/** Type guard: check if a DAG node sends a platform message without AI */
+export function isMessageNode(node: DagNode): node is MessageNode {
+  return 'message' in node && typeof node.message === 'string';
 }
 
 /** Type guard: check if a DAG node is a loop (iterative) node */

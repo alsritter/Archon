@@ -190,6 +190,16 @@ You can also use `$nodeId.output` directly inside `prompt:` text to pass context
   depends_on: [investigate]
 ```
 
+Use `message:` when a workflow needs to send deterministic text back to the active chat or adapter without running an AI node:
+
+```yaml
+- id: present
+  message: |
+    Here is the generated prompt:
+    $render.payload.prompt
+  depends_on: [render]
+```
+
 Subprocess nodes can also expose structured payload without printing it to stdout. Write JSON to `$ARTIFACTS_DIR/<nodeId>.payload.json` from a `bash:` or `script:` node, then read it downstream with `$nodeId.payload` or `$nodeId.payload.field`:
 
 ```yaml

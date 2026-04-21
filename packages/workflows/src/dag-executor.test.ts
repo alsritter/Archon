@@ -5286,6 +5286,101 @@ describe('executeDagWorkflow -- cost tracking', () => {
   });
 });
 
+describe('executeDagWorkflow -- message nodes', () => {
+  let testDir: string;
+
+  beforeEach(async () => {
+    testDir = join(
+      tmpdir(),
+      `dag-message-test-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    );
+    await mkdir(testDir, { recursive: true });
+
+    mockSendQueryDag.mockClear();
+    mockGetAgentProviderDag.mockClear();
+
+    mockGetAgentProviderDag.mockImplementation(() => ({
+      sendQuery: mockSendQueryDag,
+      getType: () => 'claude',
+      getCapabilities: mockClaudeCapabilities,
+    }));
+  });
+
+  afterEach(async () => {
+    try {
+      await rm(testDir, { recursive: true, force: true });
+    } catch {
+      // ignore cleanup errors
+    }
+  });
+
+  it('sends a substituted platform message without invoking AI', async () => {
+    const store = createMockStore();
+    const mockDeps = createMockDeps(store);
+    const platform = createMockPlatform();
+    const artifactsDir = join(testDir, 'artifacts');
+    const workflowRun = makeWorkflowRun('message-run-id', {
+      workflow_name: 'message-test',
+      conversation_id: 'conv-message',
+      user_message: 'render prompt',
+    });
+
+    const nodes: DagNode[] = [
+      {
+        id: 'render',
+        script:
+          'await Bun.write("$ARTIFACTS_DIR/render.payload.json", JSON.stringify({ prompt: "Hello from payload" })); console.log("summary")',
+        runtime: 'bun',
+      },
+      {
+        id: 'present',
+        message: 'Prompt: $render.payload.prompt\nOutput: $render.output\nUser: $USER_MESSAGE',
+        depends_on: ['render'],
+      },
+    ];
+
+    await executeDagWorkflow(
+      mockDeps,
+      platform,
+      'conv-message',
+      testDir,
+      { name: 'message-test', nodes },
+      workflowRun,
+      'claude',
+      undefined,
+      artifactsDir,
+      join(testDir, 'logs'),
+      'main',
+      'docs/',
+      minimalConfig
+    );
+
+    expect(mockSendQueryDag.mock.calls.length).toBe(0);
+
+    const sendCalls = (platform.sendMessage as Mock).mock.calls;
+    expect(sendCalls.length).toBe(1);
+    expect(sendCalls[0][0]).toBe('conv-message');
+    expect(String(sendCalls[0][1])).toContain('Prompt: Hello from payload');
+    expect(String(sendCalls[0][1])).toContain('Output: summary');
+    expect(String(sendCalls[0][1])).toContain('User: render prompt');
+    expect(sendCalls[0][2]).toMatchObject({
+      category: 'workflow_status',
+      nodeName: 'present',
+    });
+
+    const eventCalls = (store.createWorkflowEvent as ReturnType<typeof mock>).mock.calls;
+    const completedEvent = eventCalls.find(
+      (call: unknown[]) =>
+        (call[0] as { event_type: string }).event_type === 'node_completed' &&
+        (call[0] as { step_name: string }).step_name === 'present'
+    );
+    expect(completedEvent).toBeDefined();
+    expect((completedEvent![0] as { data: { node_output: string } }).data.node_output).toContain(
+      'Prompt: Hello from payload'
+    );
+  });
+});
+
 describe('executeDagWorkflow -- script nodes', () => {
   let testDir: string;
 
